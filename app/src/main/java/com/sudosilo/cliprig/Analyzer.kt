@@ -139,10 +139,10 @@ object Analyzer {
         audio: FloatArray,
         visual: FloatArray,
         session: Session?,
-        clipLenSec: Int,
+        clipMsIn: Long,
         count: Int
     ): List<ClipWindow> {
-        val clipMs = clipLenSec * 1000L
+        val clipMs = clipMsIn
         if (durationMs <= clipMs + 1000) return listOf(ClipWindow(0, durationMs, 1f))
         val bins = audio.size
         val taps = FloatArray(bins)

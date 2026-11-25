@@ -70,6 +70,7 @@ object Pipeline {
     fun fromSession(ctx: Context, session: Session) = enqueue(ctx) {
         val uri = Uri.fromFile(File(session.videoPath))
         makeClips(ctx, uri, session.gameId, session.gameName, session.url, session, session.clipLenSec)
+        if (session.url == "camera") Store.markInboxDone(uri.toString())
     }
 
     fun fromUri(ctx: Context, uri: Uri, gameId: String, copyFirst: Boolean) = enqueue(ctx) {
@@ -98,7 +99,7 @@ object Pipeline {
         }
         val g = Store.game(clip.gameId)
         val caption = if (newCaption) pickCaption(clip.gameId, clip.caption) else clip.caption
-        val ranges = clip.ranges()
+        val ranges = clip.segs()
         val theme = ThemeBook.byId(themeId)
         val out = File(Store.workDir, "2026-11-25-blue-cliprig-v1-work-${clip.id}.mp4")
         ClipEditor.render(
@@ -110,6 +111,13 @@ object Pipeline {
         Store.replaceClip(clip.copy(uri = newUri.toString(), caption = caption, theme = themeId))
         withContext(Dispatchers.Main) { onClipAdded?.invoke() }
         post(Status(true, "Done", 1f))
+    }
+
+    private fun fastSeg(dur: Long, outMs: Long): Seg {
+        val start = minOf(1500L, dur / 20)
+        val len = dur - start
+        val speed = (len.toFloat() / outMs).coerceIn(1.5f, 16f)
+        return Seg(start, minOf(dur, start + (outMs * speed).toLong()), speed)
     }
 
     private fun hypes(theme: Theme, n: Int): List<String> {
@@ -140,15 +148,39 @@ object Pipeline {
         val g = Store.game(gameId)
         val title = (g?.name ?: gameName).ifBlank { "Game" }
         val style = Store.clipStyle
-        val jobs = mutableListOf<Pair<List<LongRange>, Boolean>>()
-        if (style != "Rapid fire") {
-            Analyzer.pick(dur, audio, visual, session, clipLenSec, Store.clipCount)
-                .forEach { jobs.add(listOf(it.startMs..it.endMs) to false) }
+        val jobs = mutableListOf<Pair<List<Seg>, Boolean>>()
+        val sp = Store.speed
+        val wantHighlights = style == "Highlights" || style == "Highlights and rapid fire" || style == "Everything"
+        val wantRapid = style == "Rapid fire" || style == "Highlights and rapid fire" || style == "Everything"
+        val wantFast = style == "Fast forward" || style == "Everything"
+        if (wantHighlights) {
+            val srcLen = (clipLenSec * 1000L * sp).toLong()
+            val picked = Analyzer.pick(dur, audio, visual, session, srcLen, Store.clipCount)
+            picked.forEach { jobs.add(listOf(Seg(it.startMs, it.endMs, if (it.endMs - it.startMs < srcLen) 1f else sp)) to false) }
+            if (picked.size < Store.clipCount && !wantFast) jobs.add(listOf(fastSeg(dur, clipLenSec * 1000L)) to false)
         }
-        if (style != "Highlights") {
-            val cuts = Analyzer.pick(dur, audio, visual, session, 3, 5).map { it.startMs..it.endMs }
+        if (wantRapid) {
+            val cuts = Analyzer.pick(dur, audio, visual, session, 3000L, 5).map { Seg(it.startMs, it.endMs) }.toMutableList()
+            if (cuts.size < 5) {
+                val fill = mutableListOf<Seg>()
+                var k = 0
+                while (cuts.size + fill.size < 5) {
+                    val base = cuts.getOrNull(k % maxOf(1, cuts.size))
+                    val speed = if (k < cuts.size) 2f else 3f + k
+                    val want = (3000 * speed).toLong()
+                    val center = base?.let { (it.from + it.to) / 2 } ?: dur / 2
+                    var s0 = maxOf(0L, center - want / 2)
+                    val e0 = minOf(dur, s0 + want)
+                    s0 = maxOf(0L, e0 - want)
+                    val actual = maxOf(1.1f, (e0 - s0) / 3000f)
+                    fill.add(Seg(s0, e0, actual))
+                    k++
+                }
+                cuts.addAll(fill)
+            }
             if (cuts.isNotEmpty()) jobs.add(cuts to true)
         }
+        if (wantFast) jobs.add(listOf(fastSeg(dur, clipLenSec * 1000L)) to false)
         var made = 0
         jobs.forEachIndexed { i, (ranges, rapid) ->
             post(Status(true, if (rapid) "Cutting the rapid fire montage" else "Cutting clip ${i + 1} of ${jobs.size}", 0.5f + 0.5f * i / jobs.size))
@@ -165,7 +197,7 @@ object Pipeline {
                 Store.addClip(
                     ClipRecord(
                         UUID.randomUUID().toString().take(12), pub.toString(), title,
-                        caption, uri.toString(), ranges.first().first, ranges.last().last, gameId,
+                        caption, uri.toString(), ranges.first().from, ranges.last().to, gameId,
                         System.currentTimeMillis(), ClipRecord.encode(ranges), rapid, theme.id
                     )
                 )

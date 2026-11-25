@@ -38,7 +38,8 @@ data class Frame(
     val title: String,
     val endText: String,
     val cards: Boolean,
-    val captionStyle: String
+    val captionStyle: String,
+    val speed: Float = 1f
 ) {
     val endStart: Long get() = if (cards && endText.isNotBlank()) total - 2200 else Long.MAX_VALUE
     val inEnd: Boolean get() = t >= endStart
@@ -171,6 +172,16 @@ abstract class Theme(val id: String, val label: String, val blurb: String) {
     }
 
     abstract fun draw(c: Canvas, f: Frame)
+
+    fun speedBadge(c: Canvas, f: Frame) {
+        val label = "\u25B6\u25B6 " + (if (f.speed % 1f == 0f) "${f.speed.toInt()}x" else "${"%.1f".format(f.speed)}x")
+        val vr = videoRect(f).takeIf { it.width() > 10 } ?: screen
+        val p = Paint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 46f; typeface = Fx.black }
+        val w = p.measureText(label) + 44
+        val r = RectF(vr.right - w - 24, vr.top + 70, vr.right - 24, vr.top + 140)
+        c.drawRoundRect(r, 35f, 35f, Fx.fill(0xE61E6BFF.toInt()))
+        Fx.text(c, label, r.centerX(), r.centerY() + 16, 46f, Color.WHITE, Fx.black)
+    }
 
     open fun key(f: Frame): String {
         val animating = f.inIntro || f.burst || (f.inEnd && f.t - f.endStart < 900) || (f.cutT < 400)

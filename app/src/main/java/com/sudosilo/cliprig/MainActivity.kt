@@ -66,6 +66,8 @@ class MainActivity : AppCompatActivity() {
     private var launchGames = listOf<GameProfile>()
     private var launchLen = 15
     private lateinit var launchStyle: Spinner
+    private lateinit var startButton: TextView
+    private var pendingCamera = false
     private lateinit var preview: ThemePreviewView
     private lateinit var themeList: LinearLayout
 
@@ -87,13 +89,19 @@ class MainActivity : AppCompatActivity() {
     private val lenOptions = listOf(10, 15, 20, 30)
 
     private val permLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
-        if (it[Manifest.permission.RECORD_AUDIO] == true) askProjection()
+        if (pendingCamera) {
+            if (it[Manifest.permission.CAMERA] == true || ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) openCamera()
+            else toast("cliprig needs the camera permission for live camera")
+        } else if (it[Manifest.permission.RECORD_AUDIO] == true) askProjection()
         else toast("cliprig needs the audio permission to record game sound")
     }
     private val videoPermLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
         refreshInbox()
     }
     private var pendingLaunch: Triple<String, String, String>? = null
+    private val pickVideo = registerForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        if (uri != null) { Pipeline.fromUri(this, uri, inboxGameId, true); show("library") }
+    }
     private val projectionLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
         val p = pendingLaunch ?: return@registerForActivityResult
         if (r.resultCode != Activity.RESULT_OK || r.data == null) { toast("Recording was not approved"); return@registerForActivityResult }
@@ -304,9 +312,13 @@ class MainActivity : AppCompatActivity() {
             Store.clipLenSec = lenOptions[it]
         }
         val counts = (1..6).toList()
-        val styles0 = listOf("Highlights", "Rapid fire", "Both")
-        row("Clip style", listOf("Highlight clips", "Rapid fire montage", "Both"), styles0.indexOf(Store.clipStyle).coerceAtLeast(0)) {
+        val styles0 = listOf("Highlights", "Rapid fire", "Fast forward", "Highlights and rapid fire", "Everything")
+        row("Clip style", listOf("Highlight clips", "Rapid fire montage", "Fast forward recap", "Highlights and rapid fire", "Everything"), styles0.indexOf(Store.clipStyle).coerceAtLeast(0)) {
             Store.clipStyle = styles0[it]; if (::launchStyle.isInitialized) launchStyle.setSelection(it, false)
+        }
+        val speeds = listOf(1f, 1.5f, 2f, 3f, 4f)
+        row("Highlight speed", listOf("Normal", "1.5x fast forward", "2x fast forward", "3x fast forward", "4x fast forward"), speeds.indexOf(Store.speed).coerceAtLeast(0)) {
+            Store.speed = speeds[it]
         }
         row("Clips per session", counts.map { "$it" }, Store.clipCount - 1) { Store.clipCount = counts[it] }
         row("Music", listOf("On", "Off"), if (Store.musicOn) 0 else 1) { Store.musicOn = it == 0 }
@@ -340,7 +352,13 @@ class MainActivity : AppCompatActivity() {
     private fun buildLaunch(): View {
         val scroll = ScrollView(this)
         val c = column(20)
-        c.add(label("Game", 13f, MUTED, true))
+        c.add(label("Record from", 13f, MUTED, true))
+        val sources = listOf("Browser", "Camera")
+        c.add(picker(listOf("Game in the browser", "Live camera"), sources.indexOf(Store.source).coerceAtLeast(0)) {
+            Store.source = sources[it]
+            startButton.text = if (it == 1) "Start camera" else "Start playing"
+        }, 6)
+        c.add(label("Game", 13f, MUTED, true), 16)
         gameSpinner = picker(listOf("Typed address"), 0) {}
         c.add(gameSpinner, 6)
         c.add(label("Game address", 13f, MUTED, true), 16)
@@ -350,15 +368,17 @@ class MainActivity : AppCompatActivity() {
         launchLen = Store.clipLenSec
         c.add(picker(lenOptions.map { "$it seconds" }, lenOptions.indexOf(launchLen).coerceAtLeast(0)) { launchLen = lenOptions[it] }, 6)
         c.add(label("Clip style", 13f, MUTED, true), 16)
-        val styles = listOf("Highlights", "Rapid fire", "Both")
-        launchStyle = picker(listOf("Highlight clips", "Rapid fire montage", "Both"), styles.indexOf(Store.clipStyle).coerceAtLeast(0)) {
+        val styles = listOf("Highlights", "Rapid fire", "Fast forward", "Highlights and rapid fire", "Everything")
+        launchStyle = picker(listOf("Highlight clips", "Rapid fire montage", "Fast forward recap", "Highlights and rapid fire", "Everything"), styles.indexOf(Store.clipStyle).coerceAtLeast(0)) {
             Store.clipStyle = styles[it]
         }
         c.add(launchStyle, 6)
-        c.add(blueButton("Start playing") { startRun() }, 24, dp(60))
+        startButton = blueButton(if (Store.source == "Camera") "Start camera" else "Start playing") { startRun() }
+        c.add(startButton, 24, dp(60))
         val tip = label(
-            "While you play, press volume down or tap the blue star to mark a moment you want in a clip. " +
-                "Tap the red square or press back when the run is over and cliprig starts cutting clips.",
+            "While you record, press volume down or tap the blue star to mark a moment you want in a clip. " +
+                "Tap the red square or press back when you are done and cliprig starts cutting clips. " +
+                "Live camera records with the phone camera and mic, and the round arrow flips cameras.",
             14f, MUTED
         ).apply {
             background = rounded(BLUE_SOFT, dp(14).toFloat())
@@ -394,6 +414,15 @@ class MainActivity : AppCompatActivity() {
     private fun startRun(gameOverride: GameProfile? = null) {
         if (RecordService.instance != null) { toast("A recording is already running"); return }
         val g = gameOverride ?: launchGames.getOrNull(gameSpinner.selectedItemPosition - 1)
+        if (gameOverride == null && Store.source == "Camera") {
+            pendingCamera = true
+            pendingLaunch = Triple(g?.id ?: "", g?.name ?: "Camera", "camera")
+            val need = listOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
+            val missing = need.filter { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }
+            if (missing.isEmpty()) openCamera() else permLauncher.launch(missing.toTypedArray())
+            return
+        }
+        pendingCamera = false
         val url = normalizeUrl(gameOverride?.url ?: addressField.text.toString())
         if (url.isEmpty()) { toast("Type a game address first"); return }
         Store.lastUrl = url
@@ -403,6 +432,12 @@ class MainActivity : AppCompatActivity() {
         if (Build.VERSION.SDK_INT >= 33) need.add(Manifest.permission.POST_NOTIFICATIONS)
         val missing = need.filter { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }
         if (missing.isEmpty()) askProjection() else permLauncher.launch(missing.toTypedArray())
+    }
+
+    private fun openCamera() {
+        val p = pendingLaunch ?: return
+        SessionLog.reset(p.first, p.second, "camera", launchLen)
+        startActivity(Intent(this, CameraActivity::class.java))
     }
 
     private fun askProjection() {
@@ -422,6 +457,15 @@ class MainActivity : AppCompatActivity() {
         c.add(label("Clips from these recordings go to", 13f, MUTED, true))
         inboxGameSpinner = picker(listOf("No game"), 0) {}
         c.add(inboxGameSpinner, 6)
+        val filterRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val filters = listOf("Screen", "Camera", "All")
+        filterRow.addView(picker(listOf("Screen recordings", "Camera videos", "All videos"), filters.indexOf(Store.inboxFilter).coerceAtLeast(0)) {
+            if (Store.inboxFilter != filters[it]) { Store.inboxFilter = filters[it]; refreshInbox() }
+        }, LinearLayout.LayoutParams(0, dp(48), 1f).apply { rightMargin = dp(6) })
+        filterRow.addView(blueButton("Pick a video", false) {
+            pickVideo.launch(androidx.activity.result.PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly))
+        }.apply { textSize = 14f; setPadding(dp(8), 0, dp(8), 0) }, LinearLayout.LayoutParams(0, dp(48), 1f).apply { leftMargin = dp(6) })
+        c.add(filterRow, 10)
         val frame = FrameLayout(this)
         inboxList = RecyclerView(this).apply { layoutManager = LinearLayoutManager(this@MainActivity); clipToPadding = false; setPadding(0, 0, 0, dp(130)) }
         frame.addView(inboxList, FrameLayout.LayoutParams(-1, -1))
@@ -477,7 +521,16 @@ class MainActivity : AppCompatActivity() {
         runCatching {
             contentResolver.query(
                 MediaStore.Video.Media.EXTERNAL_CONTENT_URI, proj,
-                "${MediaStore.Video.Media.RELATIVE_PATH} LIKE ?", arrayOf("%Screen recordings%"),
+                when (Store.inboxFilter) {
+                    "Screen" -> "${MediaStore.Video.Media.RELATIVE_PATH} LIKE ?"
+                    "Camera" -> "${MediaStore.Video.Media.RELATIVE_PATH} LIKE ?"
+                    else -> "${MediaStore.Video.Media.RELATIVE_PATH} NOT LIKE ?"
+                },
+                when (Store.inboxFilter) {
+                    "Screen" -> arrayOf("%Screen recordings%")
+                    "Camera" -> arrayOf("DCIM/Camera%")
+                    else -> arrayOf("%Movies/cliprig%")
+                },
                 "${MediaStore.Video.Media.DATE_ADDED} DESC"
             )?.use { c ->
                 while (c.moveToNext() && out.size < 40) {
@@ -527,7 +580,7 @@ class MainActivity : AppCompatActivity() {
             val row = h.itemView as LinearLayout
             row.removeAllViews()
             if (items.isEmpty()) {
-                row.addView(label("No screen recordings found yet. Record a game with the Samsung screen recorder and it shows up here.", 15f, MUTED))
+                row.addView(label("No videos found here yet. Record with the Samsung screen recorder or the camera, or tap Pick a video.", 15f, MUTED))
                 return
             }
             val r = items[pos]

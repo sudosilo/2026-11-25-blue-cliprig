@@ -31,6 +31,21 @@ data class GameProfile(
     }
 }
 
+data class Seg(val from: Long, val to: Long, val speed: Float = 1f) {
+    val outMs: Long get() = ((to - from) / speed).toLong()
+    fun encode() = "$from-$to@$speed"
+    companion object {
+        fun parse(s: String): Seg? {
+            val sp = s.substringAfter('@', "1").toFloatOrNull() ?: 1f
+            val a = s.substringBefore('@').split("-")
+            if (a.size != 2) return null
+            val f = a[0].toLongOrNull() ?: return null
+            val t = a[1].toLongOrNull() ?: return null
+            return Seg(f, t, sp)
+        }
+    }
+}
+
 data class ClipRecord(
     val id: String,
     val uri: String,
@@ -45,12 +60,7 @@ data class ClipRecord(
     val rapid: Boolean = false,
     val theme: String = "plain"
 ) {
-    fun ranges(): List<LongRange> {
-        val parsed = segments.split(";").mapNotNull {
-            val a = it.split("-"); if (a.size == 2) (a[0].toLongOrNull() ?: return@mapNotNull null)..(a[1].toLongOrNull() ?: return@mapNotNull null) else null
-        }
-        return parsed.ifEmpty { listOf(startMs..endMs) }
-    }
+    fun segs(): List<Seg> = segments.split(";").mapNotNull { Seg.parse(it) }.ifEmpty { listOf(Seg(startMs, endMs)) }
 
     fun toJson(): JSONObject = JSONObject()
         .put("id", id).put("uri", uri).put("gameName", gameName).put("caption", caption)
@@ -59,7 +69,7 @@ data class ClipRecord(
         .put("segments", segments).put("rapid", rapid).put("theme", theme)
 
     companion object {
-        fun encode(r: List<LongRange>) = r.joinToString(";") { "${it.first}-${it.last}" }
+        fun encode(r: List<Seg>) = r.joinToString(";") { it.encode() }
         fun fromJson(o: JSONObject) = ClipRecord(
             o.optString("id"), o.optString("uri"), o.optString("gameName"),
             o.optString("caption"), o.optString("source"), o.optLong("startMs"),
@@ -159,8 +169,17 @@ object Store {
         get() = prefs.getBoolean("introOn", true)
         set(v) = prefs.edit().putBoolean("introOn", v).apply()
     var clipStyle: String
-        get() = prefs.getString("clipStyle", "Both") ?: "Both"
+        get() = (prefs.getString("clipStyle", "Highlights and rapid fire") ?: "").let { if (it == "Both" || it.isEmpty()) "Highlights and rapid fire" else it }
         set(v) = prefs.edit().putString("clipStyle", v).apply()
+    var speed: Float
+        get() = prefs.getFloat("speed", 1f)
+        set(v) = prefs.edit().putFloat("speed", v).apply()
+    var source: String
+        get() = prefs.getString("source", "Browser") ?: "Browser"
+        set(v) = prefs.edit().putString("source", v).apply()
+    var inboxFilter: String
+        get() = prefs.getString("inboxFilter", "Screen") ?: "Screen"
+        set(v) = prefs.edit().putString("inboxFilter", v).apply()
     var lastGameId: String
         get() = prefs.getString("lastGameId", "") ?: ""
         set(v) = prefs.edit().putString("lastGameId", v).apply()

@@ -21,6 +21,8 @@ import androidx.media3.common.audio.ChannelMixingMatrix
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.effect.BitmapOverlay
 import androidx.media3.effect.FrameDropEffect
+import androidx.media3.effect.SpeedChangeEffect
+import androidx.media3.common.audio.SpeedChangingAudioProcessor
 import androidx.media3.effect.MatrixTransformation
 import android.graphics.Matrix
 import androidx.media3.effect.OverlayEffect
@@ -44,7 +46,7 @@ import kotlin.coroutines.resumeWithException
 
 data class EditSpec(
     val source: Uri,
-    val segments: List<LongRange>,
+    val segments: List<Seg>,
     val rapid: Boolean,
     val caption: String,
     val hypes: List<String>,
@@ -97,55 +99,65 @@ object ClipEditor {
             MediaItem.ClippingConfiguration.Builder().setStartPositionMs(from).setEndPositionMs(to).build()
         ).build()
 
-    fun plan(spec: EditSpec, theme: Theme, sourceDurMs: Long): List<Pair<LongRange, Int>> {
+    fun plan(spec: EditSpec, theme: Theme, sourceDurMs: Long): List<Pair<Seg, Int>> {
         val intro = if (spec.intro) theme.introMs else 0L
-        val out = mutableListOf<Pair<LongRange, Int>>()
+        val out = mutableListOf<Pair<Seg, Int>>()
         if (!spec.rapid) {
             val seg = spec.segments.first()
-            var s = seg.first - intro
-            var e = seg.last
+            val lead = (intro * seg.speed).toLong()
+            var s = seg.from - lead
+            var e = seg.to
             if (s < 0) { e = minOf(sourceDurMs, e - s); s = 0 }
-            out.add(s..e to 0)
+            out.add(Seg(s, e, seg.speed) to 0)
         } else {
             if (intro > 0) {
                 val first = spec.segments.first()
-                val s = maxOf(0L, first.first - intro)
-                val e = if (first.first - s >= intro) first.first else minOf(sourceDurMs, s + intro)
-                out.add(s..e to -1)
+                val s = maxOf(0L, first.from - intro)
+                val e = if (first.from - s >= intro) first.from else minOf(sourceDurMs, s + intro)
+                out.add(Seg(s, e, 1f) to -1)
             }
             spec.segments.forEachIndexed { i, r -> out.add(r to i) }
         }
         return out
     }
 
+    private class ConstSpeed(private val v: Float) : androidx.media3.common.audio.SpeedProvider {
+        override fun getSpeed(timeUs: Long) = v
+        override fun getNextSpeedChangeTimeUs(timeUs: Long) = androidx.media3.common.C.TIME_UNSET
+    }
+
     suspend fun render(ctx: Context, spec: EditSpec, out: File) {
         val theme = ThemeBook.byId(spec.themeId)
         val dur = Analyzer.durationMs(ctx, spec.source).takeIf { it > 0 } ?: Long.MAX_VALUE
         val parts = plan(spec, theme, dur)
-        val total = parts.sumOf { it.first.last - it.first.first }
+        val total = parts.sumOf { it.first.outMs }
         val intro = if (spec.intro) theme.introMs else 0L
         val layout = if (Store.framing == "Fit") Presentation.LAYOUT_SCALE_TO_FIT
         else Presentation.LAYOUT_SCALE_TO_FIT_WITH_CROP
         val gameVol = if (spec.music != null) Store.gameVolume / 100f else 1f
 
         var offset = 0L
-        val items = parts.map { (range, cut) ->
-            val len = range.last - range.first
+        val items = parts.map { (seg, cut) ->
             val info = ItemInfo(
                 theme, offset, cut, spec.caption,
                 if (cut >= 0 && spec.rapid) spec.hypes.getOrElse(cut) { "" } else "",
-                total, intro, spec.rapid, spec.title, spec.endText, Store.titleCards, Store.captionStyle
+                total, intro, spec.rapid, spec.title, spec.endText, Store.titleCards, Store.captionStyle, seg.speed
             )
-            offset += len
+            offset += seg.outMs
             val clock = ItemClock()
-            val effects = ImmutableList.of<androidx.media3.common.Effect>(
-                FrameDropEffect.createDefaultFrameDropEffect(30f),
-                Presentation.createForWidthAndHeight(OUT_W, OUT_H, layout),
-                ThemeMatrix(info, clock),
-                OverlayEffect(ImmutableList.of<androidx.media3.effect.TextureOverlay>(ThemeOverlay(info, clock)))
-            )
-            EditedMediaItem.Builder(clipItem(spec.source, range.first, range.last))
-                .setEffects(Effects(ImmutableList.of(volume(gameVol)), effects))
+            val effects = mutableListOf<androidx.media3.common.Effect>()
+            val audio = mutableListOf<AudioProcessor>()
+            if (seg.speed != 1f) {
+                effects.add(SpeedChangeEffect(seg.speed))
+                audio.add(SpeedChangingAudioProcessor(ConstSpeed(seg.speed)))
+            }
+            effects.add(FrameDropEffect.createDefaultFrameDropEffect(30f))
+            effects.add(Presentation.createForWidthAndHeight(OUT_W, OUT_H, layout))
+            effects.add(ThemeMatrix(info, clock))
+            effects.add(OverlayEffect(ImmutableList.of<androidx.media3.effect.TextureOverlay>(ThemeOverlay(info, clock))))
+            audio.add(volume(if (seg.speed >= 3f) 0f else gameVol))
+            EditedMediaItem.Builder(clipItem(spec.source, seg.from, seg.to))
+                .setEffects(Effects(ImmutableList.copyOf(audio), ImmutableList.copyOf(effects)))
                 .build()
         }
 
@@ -218,10 +230,11 @@ data class ItemInfo(
     val title: String,
     val endText: String,
     val cards: Boolean,
-    val captionStyle: String
+    val captionStyle: String,
+    val speed: Float = 1f
 ) {
     fun frame(relMs: Long) = Frame(
-        offsetMs + relMs, totalMs, introMs, cut, relMs, rapid, caption, hype, title, endText, cards, captionStyle
+        offsetMs + relMs, totalMs, introMs, cut, relMs, rapid, caption, hype, title, endText, cards, captionStyle, speed
     )
 }
 
@@ -253,6 +266,7 @@ class ThemeOverlay(private val info: ItemInfo, private val clock: ItemClock) : B
             lastKey = key
             bmp.eraseColor(0)
             info.theme.draw(canvas, f)
+            if (f.speed > 1.01f && !f.inIntro && !f.inEnd) info.theme.speedBadge(canvas, f)
         }
         return bmp
     }

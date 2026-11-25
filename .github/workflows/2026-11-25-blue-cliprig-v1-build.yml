@@ -1,0 +1,37 @@
+name: build cliprig app
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: android-actions/setup-android@v3
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Build app
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug -PversionCode=${{ github.run_number }} --no-daemon
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          N=${{ github.run_number }}
+          cp app/build/outputs/apk/debug/app-debug.apk 2026-11-25-blue-cliprig-v$N.apk
+          gh release create v$N 2026-11-25-blue-cliprig-v$N.apk --title "cliprig v$N" --notes "Build from ${{ github.sha }}"

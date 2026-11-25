@@ -62,7 +62,9 @@ object ClipEditor {
     const val OUT_W = 1080
     const val OUT_H = 1920
 
-    fun musicTracks(ctx: Context): List<Uri> {
+    fun musicTracks(ctx: Context): List<Uri> = musicList(ctx).map { it.first }
+
+    fun musicList(ctx: Context): List<Pair<Uri, String>> {
         val tree = Store.musicFolder
         if (tree.isEmpty()) return emptyList()
         return runCatching {
@@ -70,20 +72,22 @@ object ClipEditor {
             val children = DocumentsContract.buildChildDocumentsUriUsingTree(
                 treeUri, DocumentsContract.getTreeDocumentId(treeUri)
             )
-            val list = mutableListOf<Uri>()
+            val list = mutableListOf<Pair<Uri, String>>()
             ctx.contentResolver.query(
                 children,
-                arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_MIME_TYPE),
+                arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_MIME_TYPE,
+                    DocumentsContract.Document.COLUMN_DISPLAY_NAME),
                 null, null, null
             )?.use { c ->
                 while (c.moveToNext()) {
                     val mime = c.getString(1) ?: ""
                     if (mime.startsWith("audio/")) {
-                        list.add(DocumentsContract.buildDocumentUriUsingTree(treeUri, c.getString(0)))
+                        list.add(DocumentsContract.buildDocumentUriUsingTree(treeUri, c.getString(0)) to
+                            (c.getString(2) ?: "track").substringBeforeLast('.'))
                     }
                 }
             }
-            list
+            list.sortedBy { it.second.lowercase() }
         }.getOrDefault(emptyList())
     }
 
@@ -163,7 +167,11 @@ object ClipEditor {
 
         val sequences = mutableListOf(EditedMediaItemSequence.Builder(items).build())
         if (spec.music != null) {
-            val m = EditedMediaItem.Builder(MediaItem.fromUri(spec.music))
+            val musicItem = MediaItem.Builder().setUri(spec.music)
+                .setClippingConfiguration(
+                    MediaItem.ClippingConfiguration.Builder().setStartPositionMs(Store.musicStartSec * 1000L).build()
+                ).build()
+            val m = EditedMediaItem.Builder(musicItem)
                 .setRemoveVideo(true)
                 .setEffects(Effects(ImmutableList.of(volume(Store.musicVolume / 100f)), ImmutableList.of()))
                 .build()

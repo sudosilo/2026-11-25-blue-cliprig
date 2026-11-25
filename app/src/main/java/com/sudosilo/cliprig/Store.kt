@@ -58,7 +58,8 @@ data class ClipRecord(
     val createdAt: Long,
     val segments: String = "",
     val rapid: Boolean = false,
-    val theme: String = "plain"
+    val theme: String = "plain",
+    val music: String = ""
 ) {
     fun segs(): List<Seg> = segments.split(";").mapNotNull { Seg.parse(it) }.ifEmpty { listOf(Seg(startMs, endMs)) }
 
@@ -66,7 +67,7 @@ data class ClipRecord(
         .put("id", id).put("uri", uri).put("gameName", gameName).put("caption", caption)
         .put("source", source).put("startMs", startMs).put("endMs", endMs)
         .put("gameId", gameId).put("createdAt", createdAt)
-        .put("segments", segments).put("rapid", rapid).put("theme", theme)
+        .put("segments", segments).put("rapid", rapid).put("theme", theme).put("music", music)
 
     companion object {
         fun encode(r: List<Seg>) = r.joinToString(";") { it.encode() }
@@ -74,7 +75,7 @@ data class ClipRecord(
             o.optString("id"), o.optString("uri"), o.optString("gameName"),
             o.optString("caption"), o.optString("source"), o.optLong("startMs"),
             o.optLong("endMs"), o.optString("gameId"), o.optLong("createdAt"),
-            o.optString("segments"), o.optBoolean("rapid"), o.optString("theme", "plain")
+            o.optString("segments"), o.optBoolean("rapid"), o.optString("theme", "plain"), o.optString("music")
         )
     }
 }
@@ -141,6 +142,18 @@ object Store {
     var musicOn: Boolean
         get() = prefs.getBoolean("musicOn", true)
         set(v) = prefs.edit().putBoolean("musicOn", v).apply()
+    var musicMode: String
+        get() = prefs.getString("musicMode", if (prefs.getBoolean("musicOn", true)) "Random" else "Off") ?: "Random"
+        set(v) = prefs.edit().putString("musicMode", v).apply()
+    var musicQueue: List<String>
+        get() = (prefs.getString("musicQueue", "") ?: "").split("\n").filter { it.isNotBlank() }
+        set(v) = prefs.edit().putString("musicQueue", v.joinToString("\n")).apply()
+    var queueIndex: Int
+        get() = prefs.getInt("queueIndex", 0)
+        set(v) = prefs.edit().putInt("queueIndex", v).apply()
+    var musicStartSec: Int
+        get() = prefs.getInt("musicStartSec", 0)
+        set(v) = prefs.edit().putInt("musicStartSec", v).apply()
     var musicFolder: String
         get() = prefs.getString("musicFolder", "") ?: ""
         set(v) = prefs.edit().putString("musicFolder", v).apply()

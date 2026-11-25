@@ -63,9 +63,21 @@ object Pipeline {
     }
 
     private fun pickMusic(ctx: Context): Uri? {
-        if (!Store.musicOn) return null
+        when (Store.musicMode) {
+            "Off" -> return null
+            "Queue" -> {
+                val q = Store.musicQueue
+                if (q.isNotEmpty()) {
+                    val i = Store.queueIndex % q.size
+                    Store.queueIndex = i + 1
+                    return Uri.parse(q[i])
+                }
+            }
+        }
         return ClipEditor.musicTracks(ctx).randomOrNull()
     }
+
+    fun newMusic(ctx: Context, clip: ClipRecord) = rerender(ctx, clip, clip.theme, false, true)
 
     fun fromSession(ctx: Context, session: Session) = enqueue(ctx) {
         val uri = Uri.fromFile(File(session.videoPath))
@@ -90,8 +102,18 @@ object Pipeline {
 
     fun restyle(ctx: Context, clip: ClipRecord) = rerender(ctx, clip, ThemeBook.pick(Store.theme).id, false)
 
-    private fun rerender(ctx: Context, clip: ClipRecord, themeId: String, newCaption: Boolean) = enqueue(ctx) {
-        post(Status(true, if (newCaption) "Making a new caption version" else "Restyling with ${ThemeBook.byId(themeId).label}", 0.2f))
+    private fun rerender(ctx: Context, clip: ClipRecord, themeId: String, newCaption: Boolean, swapMusic: Boolean = false) = enqueue(ctx) {
+        post(Status(true, when {
+            swapMusic -> "Swapping in the next song"
+            newCaption -> "Making a new caption version"
+            else -> "Restyling with ${ThemeBook.byId(themeId).label}"
+        }, 0.2f))
+        val music: Uri? = when {
+            swapMusic -> pickMusic(ctx)
+            clip.music.isNotBlank() -> Uri.parse(clip.music)
+            Store.musicMode == "Off" -> null
+            else -> pickMusic(ctx)
+        }
         val src = Uri.parse(clip.source)
         if (src.scheme == "file" && !File(src.path ?: "").exists()) {
             post(Status(true, "The raw recording for that clip was cleaned up", 1f))
@@ -104,11 +126,11 @@ object Pipeline {
         val out = File(Store.workDir, "2026-11-25-blue-cliprig-v1-work-${clip.id}.mp4")
         ClipEditor.render(
             ctx, EditSpec(src, ranges, clip.rapid, caption, hypes(theme, ranges.size), g?.name ?: clip.gameName,
-                endText(g?.url ?: "", g?.endText ?: ""), pickMusic(ctx), themeId, Store.introOn), out
+                endText(g?.url ?: "", g?.endText ?: ""), music, themeId, Store.introOn), out
         )
         val newUri = ClipEditor.publish(ctx, out, clip.gameName) ?: return@enqueue
         runCatching { ctx.contentResolver.delete(Uri.parse(clip.uri), null, null) }
-        Store.replaceClip(clip.copy(uri = newUri.toString(), caption = caption, theme = themeId))
+        Store.replaceClip(clip.copy(uri = newUri.toString(), caption = caption, theme = themeId, music = music?.toString() ?: ""))
         withContext(Dispatchers.Main) { onClipAdded?.invoke() }
         post(Status(true, "Done", 1f))
     }
@@ -186,10 +208,11 @@ object Pipeline {
             post(Status(true, if (rapid) "Cutting the rapid fire montage" else "Cutting clip ${i + 1} of ${jobs.size}", 0.5f + 0.5f * i / jobs.size))
             val theme = ThemeBook.pick(Store.theme)
             val caption = pickCaption(gameId)
+            val music = pickMusic(ctx)
             val out = File(Store.workDir, "2026-11-25-blue-cliprig-v1-work-$i.mp4")
             ClipEditor.render(
                 ctx, EditSpec(uri, ranges, rapid, caption, hypes(theme, ranges.size), title,
-                    endText(url, g?.endText ?: ""), pickMusic(ctx), theme.id, Store.introOn), out
+                    endText(url, g?.endText ?: ""), music, theme.id, Store.introOn), out
             )
             val pub = ClipEditor.publish(ctx, out, title)
             if (pub != null) {
@@ -198,7 +221,7 @@ object Pipeline {
                     ClipRecord(
                         UUID.randomUUID().toString().take(12), pub.toString(), title,
                         caption, uri.toString(), ranges.first().from, ranges.last().to, gameId,
-                        System.currentTimeMillis(), ClipRecord.encode(ranges), rapid, theme.id
+                        System.currentTimeMillis(), ClipRecord.encode(ranges), rapid, theme.id, music?.toString() ?: ""
                     )
                 )
                 withContext(Dispatchers.Main) { onClipAdded?.invoke() }

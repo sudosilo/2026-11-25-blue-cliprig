@@ -70,6 +70,11 @@ class MainActivity : AppCompatActivity() {
     private var pendingCamera = false
     private lateinit var preview: ThemePreviewView
     private lateinit var themeList: LinearLayout
+    private lateinit var musicModePick: Spinner
+    private lateinit var musicList: LinearLayout
+    private lateinit var musicInfo: TextView
+    private var player: android.media.MediaPlayer? = null
+    private var playingUri = ""
 
     private lateinit var inboxList: RecyclerView
     private lateinit var inboxGate: View
@@ -114,6 +119,7 @@ class MainActivity : AppCompatActivity() {
             contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
             Store.musicFolder = uri.toString()
             musicFolderText?.text = folderName()
+            if (current == "music") refreshMusic()
         }
     }
     private var musicFolderText: TextView? = null
@@ -191,6 +197,7 @@ class MainActivity : AppCompatActivity() {
         screens["library"] = buildLibrary()
         screens["games"] = buildGames()
         screens["themes"] = buildThemes()
+        screens["music"] = buildMusic()
         screens.values.forEach { screenHost.addView(it, FrameLayout.LayoutParams(-1, -1)); it.visibility = View.GONE }
 
         val stack = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -245,7 +252,7 @@ class MainActivity : AppCompatActivity() {
         current = name
         screens.forEach { (k, v) -> v.visibility = if (k == name) View.VISIBLE else View.GONE }
         titleText.text = when (name) {
-            "inbox" -> "Inbox"; "library" -> "Library"; "games" -> "Games"; "themes" -> "Themes"; else -> "Launch"
+            "inbox" -> "Inbox"; "library" -> "Library"; "games" -> "Games"; "themes" -> "Themes"; "music" -> "Music"; else -> "Launch"
         }
         when (name) {
             "inbox" -> refreshInbox()
@@ -253,7 +260,9 @@ class MainActivity : AppCompatActivity() {
             "games" -> refreshGames()
             "launch" -> refreshLaunchGames()
             "themes" -> refreshThemes()
+            "music" -> refreshMusic()
         }
+        if (name != "music") stopPreview()
         drawer.closeDrawer(GravityCompat.START)
     }
 
@@ -278,6 +287,7 @@ class MainActivity : AppCompatActivity() {
         col.addView(nav("Library", "library"))
         col.addView(nav("Games", "games"))
         col.addView(nav("Themes", "themes"))
+        col.addView(nav("Music", "music"))
 
         updateItem = label("Check for update (${BuildConfig.VERSION_NAME})", 16f, BLUE, true).apply {
             setPadding(dp(20), dp(16), dp(20), dp(16))
@@ -321,7 +331,10 @@ class MainActivity : AppCompatActivity() {
             Store.speed = speeds[it]
         }
         row("Clips per session", counts.map { "$it" }, Store.clipCount - 1) { Store.clipCount = counts[it] }
-        row("Music", listOf("On", "Off"), if (Store.musicOn) 0 else 1) { Store.musicOn = it == 0 }
+        val modes = listOf("Queue", "Random", "Off")
+        row("Music", listOf("Play my queue in order", "Random from folder", "No music"), modes.indexOf(Store.musicMode).coerceAtLeast(0)) {
+            Store.musicMode = modes[it]; if (::musicModePick.isInitialized) musicModePick.setSelection(it, false)
+        }
         s.add(label("Music folder", 13f, MUTED, true), 10)
         musicFolderText = label(folderName(), 14f, INK)
         s.add(musicFolderText!!, 4)
@@ -713,6 +726,7 @@ class MainActivity : AppCompatActivity() {
         put(r1, blueButton("Share") { share(Uri.parse(clip.uri)) })
         put(r1, blueButton("New caption") { Pipeline.regenerate(this, clip); closeOverlay() })
         put(r1, blueButton("Restyle") { Pipeline.restyle(this, clip); closeOverlay() })
+        put(r2, blueButton("New music", false) { Pipeline.newMusic(this, clip); closeOverlay() })
         put(r2, blueButton("Delete", false) {
             AlertDialog.Builder(this).setMessage("Delete this clip?")
                 .setPositiveButton("Delete") { _, _ ->
@@ -783,6 +797,111 @@ class MainActivity : AppCompatActivity() {
             row.addView(label(blurb, 13f, MUTED))
             themeList.addView(row, LinearLayout.LayoutParams(-1, dp(78)).apply { bottomMargin = dp(8) })
         }
+    }
+
+    // Music
+
+    private fun buildMusic(): View {
+        val c = column(16)
+        c.add(label("Music on clips", 13f, MUTED, true))
+        val modes = listOf("Queue", "Random", "Off")
+        musicModePick = picker(listOf("Play my queue in order", "Random from folder", "No music"), modes.indexOf(Store.musicMode).coerceAtLeast(0)) {
+            Store.musicMode = modes[it]
+        }
+        c.add(musicModePick, 6)
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val starts = listOf(0, 15, 30, 45, 60)
+        row.addView(picker(listOf("Songs start at the top", "Start 15 seconds in", "Start 30 seconds in", "Start 45 seconds in", "Start a minute in"),
+            starts.indexOf(Store.musicStartSec).coerceAtLeast(0)) { Store.musicStartSec = starts[it] },
+            LinearLayout.LayoutParams(0, dp(48), 1.4f).apply { rightMargin = dp(6) })
+        row.addView(blueButton("Pick folder", false) { folderLauncher.launch(null) }.apply { textSize = 14f; setPadding(dp(6), 0, dp(6), 0) },
+            LinearLayout.LayoutParams(0, dp(48), 1f).apply { leftMargin = dp(6) })
+        c.add(row, 10)
+        val row2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        musicInfo = label("", 13f, MUTED).apply { maxLines = 2 }
+        row2.addView(musicInfo, LinearLayout.LayoutParams(0, dp(48), 1.4f).apply { rightMargin = dp(6) })
+        row2.addView(blueButton("Clear queue", false) {
+            Store.musicQueue = emptyList(); Store.queueIndex = 0; refreshMusic()
+        }.apply { textSize = 14f; setPadding(dp(6), 0, dp(6), 0) }, LinearLayout.LayoutParams(0, dp(48), 1f).apply { leftMargin = dp(6) })
+        c.add(row2, 10)
+        val scroll = ScrollView(this).apply { clipToPadding = false }
+        musicList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 0, 0, dp(130)) }
+        scroll.addView(musicList)
+        c.add(scroll, 10, 0)
+        (scroll.layoutParams as LinearLayout.LayoutParams).weight = 1f
+        return c
+    }
+
+    private fun refreshMusic() {
+        musicModePick.setSelection(listOf("Queue", "Random", "Off").indexOf(Store.musicMode).coerceAtLeast(0), false)
+        musicList.removeAllViews()
+        lifecycleScope.launch {
+            val tracks = withContext(Dispatchers.IO) { ClipEditor.musicList(this@MainActivity) }
+            val queue = Store.musicQueue
+            musicInfo.text = if (Store.musicFolder.isEmpty()) "Pick a folder with your songs first."
+            else "Tap a song to add it to the queue, tap again to take it out. Next up is spot ${if (queue.isEmpty()) "one" else (Store.queueIndex % queue.size + 1).toString()}."
+            musicList.removeAllViews()
+            if (tracks.isEmpty()) {
+                musicList.addView(label(if (Store.musicFolder.isEmpty()) "No music folder picked yet." else "No songs found in that folder.", 15f, MUTED))
+                return@launch
+            }
+            for ((uri, name) in tracks) {
+                val pos = queue.indexOf(uri.toString())
+                val r = LinearLayout(this@MainActivity).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    background = rounded(if (pos >= 0) BLUE_SOFT else Color.WHITE, dp(14).toFloat(), dp(2), if (pos >= 0) BLUE else 0xFFDCE4F2.toInt())
+                    setPadding(dp(10), dp(6), dp(8), dp(6))
+                }
+                val badge = label(if (pos >= 0) (pos + 1).toString() else "+", 16f, if (pos >= 0) Color.WHITE else BLUE, true).apply {
+                    gravity = Gravity.CENTER
+                    background = rounded(if (pos >= 0) BLUE else BLUE_SOFT, dp(18).toFloat())
+                }
+                r.addView(badge, LinearLayout.LayoutParams(dp(36), dp(36)))
+                r.addView(label(name, 15f, INK, true).apply { maxLines = 2; setPadding(dp(12), 0, dp(8), 0) }, LinearLayout.LayoutParams(0, -2, 1f))
+                val playing = playingUri == uri.toString()
+                r.addView(blueButton(if (playing) "\u25A0" else "\u25B6", !playing) { togglePreview(uri) }.apply {
+                    textSize = 16f; setPadding(0, 0, 0, 0)
+                }, LinearLayout.LayoutParams(dp(56), dp(44)))
+                r.setOnClickListener {
+                    val q = Store.musicQueue.toMutableList()
+                    if (!q.remove(uri.toString())) q.add(uri.toString())
+                    Store.musicQueue = q
+                    if (Store.musicMode != "Off" && q.isNotEmpty()) Store.musicMode = "Queue"
+                    refreshMusic()
+                }
+                musicList.addView(r, LinearLayout.LayoutParams(-1, dp(64)).apply { bottomMargin = dp(8) })
+            }
+        }
+    }
+
+    private fun togglePreview(uri: Uri) {
+        val was = playingUri
+        stopPreview()
+        if (was != uri.toString()) {
+            runCatching {
+                player = android.media.MediaPlayer().apply {
+                    setDataSource(this@MainActivity, uri)
+                    setOnPreparedListener { it.seekTo(Store.musicStartSec * 1000); it.start() }
+                    setOnCompletionListener { stopPreview(); if (current == "music") refreshMusic() }
+                    prepareAsync()
+                }
+                playingUri = uri.toString()
+            }
+        }
+        if (current == "music") refreshMusic()
+    }
+
+    private fun stopPreview() {
+        runCatching { player?.stop() }
+        runCatching { player?.release() }
+        player = null
+        playingUri = ""
+    }
+
+    override fun onPause() {
+        super.onPause()
+        if (playingUri.isNotEmpty()) { stopPreview(); if (current == "music") refreshMusic() }
     }
 
     // Games

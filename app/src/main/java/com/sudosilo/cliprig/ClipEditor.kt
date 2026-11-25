@@ -54,7 +54,9 @@ data class EditSpec(
     val endText: String,
     val music: Uri?,
     val themeId: String,
-    val intro: Boolean
+    val intro: Boolean,
+    val tagline: String = "",
+    val popups: List<String> = emptyList()
 )
 
 @UnstableApi
@@ -140,12 +142,14 @@ object ClipEditor {
         else Presentation.LAYOUT_SCALE_TO_FIT_WITH_CROP
         val gameVol = if (spec.music != null) Store.gameVolume / 100f else 1f
 
+        val schedule = ThemeBook.popupSchedule(spec.popups, intro, total, Store.titleCards && spec.endText.isNotBlank())
         var offset = 0L
         val items = parts.map { (seg, cut) ->
             val info = ItemInfo(
                 theme, offset, cut, spec.caption,
                 if (cut >= 0 && spec.rapid) spec.hypes.getOrElse(cut) { "" } else "",
-                total, intro, spec.rapid, spec.title, spec.endText, Store.titleCards, Store.captionStyle, seg.speed
+                total, intro, spec.rapid, spec.title, spec.endText, Store.titleCards, Store.captionStyle, seg.speed,
+                spec.tagline, schedule
             )
             offset += seg.outMs
             val clock = ItemClock()
@@ -239,11 +243,18 @@ data class ItemInfo(
     val endText: String,
     val cards: Boolean,
     val captionStyle: String,
-    val speed: Float = 1f
+    val speed: Float = 1f,
+    val tagline: String = "",
+    val popups: List<Popup> = emptyList()
 ) {
-    fun frame(relMs: Long) = Frame(
-        offsetMs + relMs, totalMs, introMs, cut, relMs, rapid, caption, hype, title, endText, cards, captionStyle, speed
-    )
+    fun frame(relMs: Long): Frame {
+        val t = offsetMs + relMs
+        val p = popups.firstOrNull { t >= it.startMs && t < it.startMs + it.durMs }
+        return Frame(
+            t, totalMs, introMs, cut, relMs, rapid, caption, hype, title, endText, cards, captionStyle, speed,
+            tagline, p?.text ?: "", if (p != null) t - p.startMs else 0L, p?.durMs ?: 0L
+        )
+    }
 }
 
 @UnstableApi
@@ -275,6 +286,7 @@ class ThemeOverlay(private val info: ItemInfo, private val clock: ItemClock) : B
             bmp.eraseColor(0)
             info.theme.draw(canvas, f)
             if (f.speed > 1.01f && !f.inIntro && !f.inEnd) info.theme.speedBadge(canvas, f)
+            if (f.popup.isNotBlank() && !f.inIntro && !f.inEnd) info.theme.drawPopup(canvas, f)
         }
         return bmp
     }

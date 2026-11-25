@@ -21,6 +21,8 @@ class ThemePreviewView(ctx: Context) : View(ctx) {
     var endText = "play it at\nyourgame.site"
     var intro = true
     var rapid = true
+    var tagline = ""
+    var popups: List<String> = emptyList()
 
     private var start = System.currentTimeMillis()
     private val layer = Bitmap.createBitmap((W / 2).toInt(), (H / 2).toInt(), Bitmap.Config.ARGB_8888)
@@ -40,7 +42,10 @@ class ThemePreviewView(ctx: Context) : View(ctx) {
         val hype = if (cut >= 0 && rapid) theme.hype[cut % theme.hype.size] else ""
         val cutVal = if (t < i) -1 else if (rapid) cut else 0
         val cutTime = if (rapid) cutT else (t - i).coerceAtLeast(0)
-        return Frame(t, totalMs(), i, cutVal, cutTime, rapid, caption, hype, title, endText, true, Store.captionStyle)
+        val sched = ThemeBook.popupSchedule(popups, i, totalMs(), true)
+        val p = sched.firstOrNull { t >= it.startMs && t < it.startMs + it.durMs }
+        return Frame(t, totalMs(), i, cutVal, cutTime, rapid, caption, hype, title, endText, true, Store.captionStyle, 1f,
+            tagline, p?.text ?: "", if (p != null) t - p.startMs else 0L, p?.durMs ?: 0L)
     }
 
     private fun drawFakeVideo(c: Canvas, r: RectF, t: Long, cut: Int) {
@@ -73,6 +78,7 @@ class ThemePreviewView(ctx: Context) : View(ctx) {
         layer.eraseColor(0)
         layerCanvas.save(); layerCanvas.scale(0.5f, 0.5f)
         theme.draw(layerCanvas, f)
+        if (f.popup.isNotBlank() && !f.inIntro && !f.inEnd) theme.drawPopup(layerCanvas, f)
         layerCanvas.restore()
 
         val scale = min(width / (W / 2), height / (H / 2))

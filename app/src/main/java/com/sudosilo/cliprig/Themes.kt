@@ -39,7 +39,11 @@ data class Frame(
     val endText: String,
     val cards: Boolean,
     val captionStyle: String,
-    val speed: Float = 1f
+    val speed: Float = 1f,
+    val tagline: String = "",
+    val popup: String = "",
+    val popupT: Long = 0,
+    val popupDur: Long = 0
 ) {
     val endStart: Long get() = if (cards && endText.isNotBlank()) total - 2200 else Long.MAX_VALUE
     val inEnd: Boolean get() = t >= endStart
@@ -47,6 +51,8 @@ data class Frame(
     val showCaption: Boolean get() = captionStyle != "Off" && caption.isNotBlank() && !inIntro && !inEnd
     val burst: Boolean get() = cut >= 0 && hype.isNotBlank() && cutT < 650 && !inIntro && !inEnd
 }
+
+data class Popup(val text: String, val startMs: Long, val durMs: Long)
 
 object Fx {
     val clear = Paint().apply { xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR) }
@@ -184,8 +190,25 @@ abstract class Theme(val id: String, val label: String, val blurb: String) {
     }
 
     open fun key(f: Frame): String {
-        val animating = f.inIntro || f.burst || (f.inEnd && f.t - f.endStart < 900) || (f.cutT < 400)
-        return if (animating) "a${f.t / 33}" else "s${f.cut}|${f.showCaption}|${f.inEnd}"
+        val pop = f.popup.isNotBlank() && (f.popupT < 320 || f.popupDur - f.popupT < 260)
+        val animating = f.inIntro || f.burst || pop || (f.inEnd && f.t - f.endStart < 900) || (f.cutT < 400)
+        return if (animating) "a${f.t / 33}" else "s${f.cut}|${f.showCaption}|${f.inEnd}|${f.popup.hashCode()}"
+    }
+
+    protected fun popIn(f: Frame): Float =
+        Fx.easeBack(Fx.prog(f.popupT, 0, 300)) * (1 - Fx.prog(f.popupT, f.popupDur - 250, f.popupDur))
+
+    open fun drawPopup(c: Canvas, f: Frame) {
+        val p = popIn(f)
+        if (p <= 0.01f) return
+        val l = Fx.layout(f.popup, 820, 58f, Color.WHITE, Fx.black)
+        val cy = screen.centerY() + screen.height() * 0.12f
+        c.save(); c.scale(p, p, W / 2, cy)
+        val r = RectF(W / 2 - 450, cy - l.height / 2f - 36, W / 2 + 450, cy + l.height / 2f + 36)
+        c.drawRoundRect(r, 30f, 30f, Fx.fill(0xF01E6BFF.toInt()))
+        c.drawRoundRect(r, 30f, 30f, Fx.stroke(Color.WHITE, 6f))
+        Fx.drawLayout(c, l, W / 2 - 410, cy - l.height / 2f)
+        c.restore()
     }
 }
 
@@ -204,14 +227,17 @@ object PlainTheme : Theme("plain", "Clean", "Just the gameplay with a caption, t
 
     override fun draw(c: Canvas, f: Frame) {
         when {
-            f.cards && f.t < 1600 && f.title.isNotBlank() -> box(c, f.title, 92f, 0xF01E6BFF.toInt(), H / 2)
+            f.cards && f.t < 1600 && f.title.isNotBlank() -> {
+                box(c, f.title, 92f, 0xF01E6BFF.toInt(), H / 2)
+                if (f.tagline.isNotBlank()) box(c, f.tagline, 52f, 0xF00F1A33.toInt(), H / 2 + 190)
+            }
             f.inEnd -> box(c, f.endText, 62f, 0xF00F1A33.toInt(), H / 2)
             f.showCaption -> box(c, f.caption, 64f, 0xF01E6BFF.toInt(), if (f.captionStyle == "Bottom") H * 0.81f else H * 0.19f)
         }
         if (f.rapid && f.cut > 0 && f.cutT < 220) {
             c.drawRect(0f, 0f, W, H, Fx.fill(Color.argb((200 * (1 - f.cutT / 220f)).toInt(), 255, 255, 255)))
         }
-        if (f.burst && f.rapid) {
+        if (f.burst && f.rapid && !(f.cards && f.t < 1600 && f.title.isNotBlank())) {
             val p = Fx.easeBack(Fx.prog(f.cutT, 0, 260))
             c.save(); c.scale(p, p, W / 2, H * 0.5f)
             Fx.text(c, f.hype, W / 2, H * 0.52f, 120f, Color.WHITE, Fx.black, outline = 0xFF1E6BFF.toInt(), outlineW = 22f)
@@ -280,7 +306,8 @@ object ComicTheme : Theme("comic", "Comic Book", "Halftone pages, ink panels, ca
             Fx.text(c, "THE AMAZING", W / 2, H * 0.36f, 70f, ink, Fx.black)
             val size = Fx.fitSize(f.title.uppercase(), 860f, 170f, Fx.black)
             Fx.text(c, f.title.uppercase(), W / 2, H * 0.46f, size, red, Fx.black, outline = ink, outlineW = 22f)
-            Fx.text(c, "ISSUE ONE", W / 2, H * 0.53f, 54f, 0xFF1E6BFF.toInt(), Fx.black, outline = ink, outlineW = 8f)
+            val tag = f.tagline.ifBlank { "ISSUE ONE" }.uppercase()
+            Fx.text(c, tag, W / 2, H * 0.53f, Fx.fitSize(tag, 820f, 54f, Fx.black), 0xFF1E6BFF.toInt(), Fx.black, outline = ink, outlineW = 8f)
             c.restore()
         } else {
             val vr = videoRect(f)
@@ -318,6 +345,20 @@ object ComicTheme : Theme("comic", "Comic Book", "Halftone pages, ink panels, ca
             captionBox(c, "TO BE CONTINUED...", 540f, screen.bottom - 130, 520)
         }
         Fx.text(c, f.title.uppercase(), W / 2, H - 28, 40f, ink, Fx.black)
+    }
+
+    override fun drawPopup(c: Canvas, f: Frame) {
+        val p = popIn(f); if (p <= 0.01f) return
+        c.save(); c.scale(p, p, W / 2, screen.centerY() + 300)
+        val l = Fx.layout(f.popup.uppercase(), 700, 54f, ink, Fx.black)
+        val cy = screen.centerY() + 300
+        val r = RectF(W / 2 - 400, cy - l.height / 2f - 46, W / 2 + 400, cy + l.height / 2f + 46)
+        val tail = Path().apply { moveTo(r.right - 200, r.top + 20); lineTo(r.right - 60, r.top - 120); lineTo(r.right - 110, r.top + 30); close() }
+        c.drawOval(RectF(r).apply { inset(-30f, -20f) }, Fx.fill(Color.WHITE)); c.drawPath(tail, Fx.fill(Color.WHITE))
+        c.drawOval(RectF(r).apply { inset(-30f, -20f) }, Fx.stroke(ink, 9f)); c.drawPath(tail, Fx.stroke(ink, 9f))
+        c.drawOval(RectF(r).apply { inset(-24f, -14f) }, Fx.fill(Color.WHITE))
+        Fx.drawLayout(c, l, W / 2 - 350, cy - l.height / 2f)
+        c.restore()
     }
 }
 
@@ -441,6 +482,7 @@ object DesktopTheme : Theme("desktop", "Retro Desktop", "Teal desktop, chunky gr
                 val click = f.t in 1100..1180 || f.t in 1260..1340
                 cursor(c, x, y + if (click) 4f else 0f)
             }
+            if (f.tagline.isNotBlank() && f.t in 150..1450) dialog(c, W / 2 + 120, 1150f, "Welcome", f.tagline, 720f)
             taskbar(c)
             return
         }
@@ -462,6 +504,11 @@ object DesktopTheme : Theme("desktop", "Retro Desktop", "Teal desktop, chunky gr
             }
         }
         if (f.inEnd) dialog(c, W / 2, H / 2, "Play now", f.endText, 820f, true)
+    }
+
+    override fun drawPopup(c: Canvas, f: Frame) {
+        if (popIn(f) <= 0.01f) return
+        dialog(c, W / 2, screen.centerY() + 260, f.title.ifBlank { "cliprig" }, f.popup, 780f)
     }
 }
 
@@ -561,6 +608,7 @@ object TouchPhoneTheme : Theme("touchphone", "Classic Touch Phone", "Glossy icon
             }
             hole(c, videoRect(f), 34f * (1 - Fx.prog(f.t, 1200, 1800)))
             statusBar(c)
+            if (f.tagline.isNotBlank() && f.t < 1150) banner(c, f.title.ifBlank { "Game" }, f.tagline, Fx.easeOut(Fx.prog(f.t, 100, 380)) * (1 - Fx.prog(f.t, 950, 1150)))
             return
         }
         hole(c, videoRect(f))
@@ -580,6 +628,17 @@ object TouchPhoneTheme : Theme("touchphone", "Classic Touch Phone", "Glossy icon
         }
         if (f.burst) banner(c, f.title.ifBlank { "Game" }, f.hype, Fx.easeOut(Fx.prog(f.cutT, 0, 250)))
         else if (f.showCaption) banner(c, "cliprig", f.caption, Fx.easeOut(Fx.prog(f.t, f.intro, f.intro + 300)))
+    }
+
+    override fun drawPopup(c: Canvas, f: Frame) {
+        val p = popIn(f); if (p <= 0.01f) return
+        val l = Fx.layout(f.popup, (screen.width() - 140).toInt(), 50f, Color.WHITE, Fx.bold)
+        val cy = screen.bottom - 260 - l.height / 2f
+        val r = RectF(screen.left + 40, cy - l.height / 2f - 40, screen.right - 40, cy + l.height / 2f + 40)
+        c.save(); c.scale(p, p, r.centerX(), r.centerY())
+        c.drawRoundRect(r, 40f, 40f, Fx.fill(0xF01E6BFF.toInt()))
+        Fx.drawLayout(c, l, r.left + 30, cy - l.height / 2f)
+        c.restore()
     }
 }
 
@@ -662,13 +721,23 @@ object SliderTheme : Theme("slider", "Slider Phone", "Chunky handheld with a key
 
     override fun draw(c: Canvas, f: Frame) {
         base(c)
-        if (f.t < 2300) { menu(c, f); return }
+        if (f.t < 2300) {
+            menu(c, f)
+            if (f.tagline.isNotBlank() && f.t < 1700) popup(c, f.tagline, Fx.easeOut(Fx.prog(f.t, 100, 350)) * (1 - Fx.prog(f.t, 1500, 1700)))
+            return
+        }
         hole(c, videoRect(f))
         c.drawRect(screen.left, screen.top, screen.right, screen.top + 50, Fx.fill(0xCC0F3A33.toInt()))
         Fx.text(c, f.title.ifBlank { "Game" }.take(18), screen.left + 16, screen.top + 36, 30f, lcd, Fx.mono, Paint.Align.LEFT)
         if (f.inEnd) { popup(c, "Get it: " + f.endText, Fx.easeOut(Fx.prog(f.t, f.endStart, f.endStart + 300))); return }
         if (f.burst) popup(c, f.hype, Fx.easeOut(Fx.prog(f.cutT, 0, 220)))
+        else if (f.popup.isNotBlank()) {}
         else if (f.showCaption) popup(c, f.caption, Fx.easeOut(Fx.prog(f.t, f.intro, f.intro + 300)))
+    }
+
+    override fun drawPopup(c: Canvas, f: Frame) {
+        if (f.burst) return
+        popup(c, f.popup, Fx.easeOut(Fx.prog(f.popupT, 0, 220)) * (1 - Fx.prog(f.popupT, f.popupDur - 200, f.popupDur)))
     }
 }
 
@@ -741,6 +810,10 @@ object CartoonTheme : Theme("cartoon", "Saturday Cartoon", "Wobbly ink, loud spl
                 Fx.text(c, "today's episode", W / 2, H / 2 - 120 + bob, 54f, Color.WHITE, Fx.casual, outline = ink, outlineW = 10f)
                 val size = Fx.fitSize(f.title, 640f, 140f, Fx.casual)
                 Fx.text(c, f.title, W / 2, H / 2 + 60 + bob, size, 0xFFFFE14D.toInt(), Fx.casual, outline = ink, outlineW = 18f)
+                if (f.tagline.isNotBlank()) {
+                    val ts = Fx.fitSize(f.tagline, 620f, 56f, Fx.casual)
+                    Fx.text(c, f.tagline, W / 2, H / 2 + 170 + bob, ts, Color.WHITE, Fx.casual, outline = ink, outlineW = 10f)
+                }
                 c.restore()
             }
         }
@@ -775,6 +848,17 @@ object CartoonTheme : Theme("cartoon", "Saturday Cartoon", "Wobbly ink, loud spl
     }
 
     override fun key(f: Frame): String = super.key(f) + "|w${(f.t / 110) % 3}"
+
+    override fun drawPopup(c: Canvas, f: Frame) {
+        val p = popIn(f); if (p <= 0.01f) return
+        val cy = screen.top + 560f
+        val wob = sin(f.popupT / 120.0).toFloat() * 3f
+        c.save(); c.scale(p, p, W / 2, cy); c.rotate(wob, W / 2, cy)
+        Fx.blob(c, W / 2, cy, 360f, f.popup.length + 3, 0xFFFFE14D.toInt(), ink, 12f)
+        val l = Fx.layout(f.popup, 520, 56f, ink, Fx.casual)
+        Fx.drawLayout(c, l, W / 2 - 260, cy - l.height / 2f)
+        c.restore()
+    }
 }
 
 object ArcadeTheme : Theme("arcade", "Arcade Cabinet", "Neon marquee, CRT scanlines, insert coin power on") {
@@ -832,6 +916,10 @@ object ArcadeTheme : Theme("arcade", "Arcade Cabinet", "Neon marquee, CRT scanli
         if (f.t < 1300) {
             if ((f.t / 300) % 2 == 0L) Fx.text(c, "INSERT COIN", W / 2, screen.centerY(), 80f, 0xFFFFD400.toInt(), Fx.mono, shadow = 0xFFFF8800.toInt())
             if (f.t > 800) Fx.text(c, "CREDIT 01", W / 2, screen.centerY() + 140, 54f, cyan, Fx.mono)
+            if (f.tagline.isNotBlank()) {
+                val l = Fx.layout(f.tagline.uppercase(), (screen.width() - 120).toInt(), 44f, magenta, Fx.mono)
+                Fx.drawLayout(c, l, screen.left + 60, screen.top + 160)
+            }
         }
         if (f.t in 1300..1450) c.drawRect(screen.left, screen.centerY() - 6, screen.right, screen.centerY() + 6, Fx.fill(Color.WHITE))
         if (f.rapid && f.cut > 0 && f.cutT < 160) {
@@ -864,10 +952,34 @@ object ArcadeTheme : Theme("arcade", "Arcade Cabinet", "Neon marquee, CRT scanli
     }
 
     override fun key(f: Frame): String = super.key(f) + "|h${(f.t / 400) % 2}"
+
+    override fun drawPopup(c: Canvas, f: Frame) {
+        val p = popIn(f); if (p <= 0.01f) return
+        val l = Fx.layout(f.popup.uppercase(), (screen.width() - 140).toInt(), 54f, 0xFFFFD400.toInt(), Fx.mono)
+        val cy = screen.centerY() + 120
+        val r = RectF(screen.left + 40, cy - l.height / 2f - 34, screen.right - 40, cy + l.height / 2f + 34)
+        c.save(); c.scale(1f, p, r.centerX(), r.centerY())
+        c.drawRect(r, Fx.fill(0xE6000000.toInt()))
+        c.drawRect(r, Fx.stroke(cyan, 6f))
+        Fx.drawLayout(c, l, r.left + 30, cy - l.height / 2f)
+        c.restore()
+    }
 }
 
 object ThemeBook {
     val all: List<Theme> = listOf(PlainTheme, ComicTheme, DesktopTheme, TouchPhoneTheme, SliderTheme, CartoonTheme, ArcadeTheme)
     fun byId(id: String): Theme = all.firstOrNull { it.id == id } ?: PlainTheme
+    fun popupSchedule(lines: List<String>, intro: Long, total: Long, endCard: Boolean): List<Popup> {
+        if (lines.isEmpty()) return emptyList()
+        val bodyStart = intro + 700
+        val bodyEnd = (if (endCard) total - 2200 else total) - 300
+        val show = 2000L
+        val room = bodyEnd - bodyStart
+        if (room < show) return emptyList()
+        val n = minOf(lines.size, maxOf(1, (room / (show + 600)).toInt()))
+        val gap = room / n
+        return (0 until n).map { i -> Popup(lines[i], bodyStart + i * gap, minOf(show, gap - 200)) }
+    }
+
     fun pick(setting: String): Theme = if (setting == "random") all.filter { it != PlainTheme }.random() else byId(setting)
 }

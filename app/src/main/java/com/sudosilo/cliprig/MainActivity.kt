@@ -349,8 +349,8 @@ class MainActivity : AppCompatActivity() {
         row("Title and end cards", listOf("On", "Off"), if (Store.titleCards) 0 else 1) { Store.titleCards = it == 0 }
         val keeps = listOf(1, 3, 7, 30)
         row("Keep raw recordings", keeps.map { if (it == 1) "1 day" else "$it days" }, keeps.indexOf(Store.rawKeepDays).coerceAtLeast(0)) { Store.rawKeepDays = keeps[it] }
-        s.add(label("Default captions", 13f, MUTED, true), 10)
-        s.add(blueButton("Edit default captions", false) { editDefaultCaptions() }, 4)
+        s.add(label("Default text", 13f, MUTED, true), 10)
+        s.add(blueButton("Edit default text", false) { editDefaultCaptions() }, 4)
     }
 
     private fun folderName(): String {
@@ -776,7 +776,10 @@ class MainActivity : AppCompatActivity() {
         preview.intro = Store.introOn
         val g = Store.game(Store.lastGameId)
         preview.title = g?.name?.ifBlank { null } ?: "Your Game"
-        preview.endText = "play it at\n" + (g?.url?.removePrefix("https://")?.removePrefix("http://")?.trimEnd('/')?.ifBlank { null } ?: "yourgame.site")
+        val link = g?.promoUrl?.ifBlank { null } ?: Store.defaultPromo.ifBlank { null } ?: g?.url ?: ""
+        preview.endText = g?.endText?.ifBlank { null } ?: ("play it at\n" + (link.removePrefix("https://").removePrefix("http://").trimEnd('/').ifBlank { "yourgame.site" }))
+        preview.tagline = g?.tagline?.ifBlank { null } ?: Store.defaultTagline
+        preview.popups = g?.popups?.takeIf { it.isNotEmpty() } ?: Store.defaultPopups
         preview.caption = (g?.captions?.firstOrNull() ?: Store.defaultCaptions.firstOrNull() ?: "this run was unreal")
         preview.theme = if (Store.theme == "random") ComicTheme else ThemeBook.byId(Store.theme)
         themeList.removeAllViews()
@@ -957,7 +960,14 @@ class MainActivity : AppCompatActivity() {
         val url = field("game address", g.url); c.add(url, 6)
         c.add(label("Captions, one per line", 13f, MUTED, true), 14)
         val caps = field("caption lines", g.captions.joinToString("\n"), true); c.add(caps, 6)
-        c.add(label("End card text, blank uses the address", 13f, MUTED, true), 14)
+        c.add(label("Link to advertise, like your itch page. Blank uses the default link from Settings, then the play address", 13f, MUTED, true), 14)
+        val promo = field("link to advertise", g.promoUrl); c.add(promo, 6)
+        c.add(label("Intro line, shown while the intro plays", 13f, MUTED, true), 14)
+        val tag = field("intro line", g.tagline).apply { inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES }
+        c.add(tag, 6)
+        c.add(label("Pop up lines, one per line, dropped into the video", 13f, MUTED, true), 14)
+        val pops = field("pop up lines", g.popups.joinToString("\n"), true); c.add(pops, 6)
+        c.add(label("End card text, blank uses the advertised link", 13f, MUTED, true), 14)
         val end = field("end card text", g.endText); c.add(end, 6)
         val hook = CheckBox(this).apply { text = "Event hook installed in this game"; isChecked = g.hook; setTextColor(INK) }
         c.add(hook, 14)
@@ -969,6 +979,9 @@ class MainActivity : AppCompatActivity() {
             g.url = normalizeUrl(url.text.toString())
             g.captions = caps.text.toString().lines().map { it.trim() }.filter { it.isNotEmpty() }.toMutableList()
             g.endText = end.text.toString().trim()
+            g.promoUrl = promo.text.toString().trim()
+            g.tagline = tag.text.toString().trim()
+            g.popups = pops.text.toString().lines().map { it.trim() }.filter { it.isNotEmpty() }.toMutableList()
             g.hook = hook.isChecked
             Store.upsertGame(g); closeOverlay(); refreshGames(); refreshLaunchGames()
         })
@@ -983,19 +996,32 @@ class MainActivity : AppCompatActivity() {
 
     private fun editDefaultCaptions() {
         drawer.closeDrawer(GravityCompat.START)
-        val c = column(20).apply { setBackgroundColor(PAPER) }
-        c.add(label("Default captions", 22f, INK, true))
-        c.add(label("Used for games without their own captions. One per line.", 13f, MUTED), 6)
-        val f = field("caption lines", Store.defaultCaptions.joinToString("\n"), true)
-        c.add(f, 12)
+        val scroll = ScrollView(this).apply { setBackgroundColor(PAPER) }
+        val c = column(20)
+        c.add(label("Default text", 22f, INK, true))
+        c.add(label("Used for any game that leaves these blank.", 13f, MUTED), 6)
+        c.add(label("Link to advertise", 13f, MUTED, true), 14)
+        val promo = field("link to advertise", Store.defaultPromo); c.add(promo, 6)
+        c.add(label("Intro line", 13f, MUTED, true), 14)
+        val tag = field("intro line", Store.defaultTagline).apply { inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES }
+        c.add(tag, 6)
+        c.add(label("Captions, one per line", 13f, MUTED, true), 14)
+        val f = field("caption lines", Store.defaultCaptions.joinToString("\n"), true); c.add(f, 6)
+        c.add(label("Pop up lines, one per line", 13f, MUTED, true), 14)
+        val pops = field("pop up lines", Store.defaultPopups.joinToString("\n"), true); c.add(pops, 6)
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         row.addView(blueButton("Save") {
+            Store.defaultPromo = promo.text.toString().trim()
+            Store.defaultTagline = tag.text.toString().trim()
             Store.defaultCaptions = f.text.toString().lines().map { it.trim() }.filter { it.isNotEmpty() }
+            Store.defaultPopups = pops.text.toString().lines().map { it.trim() }.filter { it.isNotEmpty() }
             closeOverlay()
+            if (current == "themes") refreshThemes()
         }, LinearLayout.LayoutParams(0, dp(52), 1f).apply { rightMargin = dp(6) })
         row.addView(blueButton("Close", false) { closeOverlay() }, LinearLayout.LayoutParams(0, dp(52), 1f).apply { leftMargin = dp(6) })
-        c.add(row, 16)
-        openOverlay(c)
+        c.add(row, 20)
+        scroll.addView(c)
+        openOverlay(scroll)
     }
 
     private fun chooseGame(title: String, onPick: (String) -> Unit) {

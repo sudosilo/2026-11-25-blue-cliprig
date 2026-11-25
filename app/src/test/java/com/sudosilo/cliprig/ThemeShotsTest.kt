@@ -28,7 +28,8 @@ class ThemeShotsTest {
                 val cut = if (t < i0) -1 else (body / 3000).toInt()
                 val cutT = if (t < i0) t else body - cut * 3000
                 val f = Frame(t, total, i0, cut, cutT, true, "this run was unreal", theme.hype[cut.coerceAtLeast(0) % theme.hype.size],
-                    "Ascend", "play it at\nascend.vercel.app", true, "Top")
+                    "Ascend", "play it at\nsudosilo.itch.io", true, "Top", 1f, "Jump higher than your problems",
+                    if (i == 5) "Built on a phone in the desert" else "", 900, 2000)
                 val bmp = Bitmap.createBitmap(W.toInt(), H.toInt(), Bitmap.Config.ARGB_8888)
                 val c = Canvas(bmp)
                 c.drawColor(Color.MAGENTA)
@@ -36,6 +37,7 @@ class ThemeShotsTest {
                 c.drawRect(vr, Paint().apply { color = 0xFF33AA55.toInt() })
                 val layer = Bitmap.createBitmap(W.toInt(), H.toInt(), Bitmap.Config.ARGB_8888)
                 theme.draw(Canvas(layer), f)
+                if (f.popup.isNotBlank()) theme.drawPopup(Canvas(layer), f)
                 c.drawBitmap(layer, 0f, 0f, null)
                 sc.save(); sc.translate(i * W / 4, 0f); sc.scale(0.25f, 0.25f); sc.drawBitmap(bmp, 0f, 0f, null); sc.restore()
             }

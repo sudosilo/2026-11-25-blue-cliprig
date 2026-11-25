@@ -126,7 +126,8 @@ object Pipeline {
         val out = File(Store.workDir, "2026-11-25-blue-cliprig-v1-work-${clip.id}.mp4")
         ClipEditor.render(
             ctx, EditSpec(src, ranges, clip.rapid, caption, hypes(theme, ranges.size), g?.name ?: clip.gameName,
-                endText(g?.url ?: "", g?.endText ?: ""), music, themeId, Store.introOn), out
+                endText(promo(g, g?.url ?: ""), g?.endText ?: ""), music, themeId, Store.introOn,
+                tagline(g), popups(g)), out
         )
         val newUri = ClipEditor.publish(ctx, out, clip.gameName) ?: return@enqueue
         runCatching { ctx.contentResolver.delete(Uri.parse(clip.uri), null, null) }
@@ -146,6 +147,14 @@ object Pipeline {
         val bank = theme.hype.shuffled()
         return (0 until n).map { bank[it % bank.size] }
     }
+
+    private fun promo(g: GameProfile?, playUrl: String): String =
+        g?.promoUrl?.ifBlank { null } ?: Store.defaultPromo.ifBlank { null } ?: playUrl
+
+    private fun tagline(g: GameProfile?): String = g?.tagline?.ifBlank { null } ?: Store.defaultTagline
+
+    private fun popups(g: GameProfile?): List<String> =
+        (g?.popups?.takeIf { it.isNotEmpty() } ?: Store.defaultPopups).shuffled()
 
     private fun endText(url: String, custom: String): String {
         if (custom.isNotBlank()) return custom
@@ -212,7 +221,8 @@ object Pipeline {
             val out = File(Store.workDir, "2026-11-25-blue-cliprig-v1-work-$i.mp4")
             ClipEditor.render(
                 ctx, EditSpec(uri, ranges, rapid, caption, hypes(theme, ranges.size), title,
-                    endText(url, g?.endText ?: ""), music, theme.id, Store.introOn), out
+                    endText(promo(g, if (url == "camera") "" else url), g?.endText ?: ""), music, theme.id, Store.introOn,
+                    tagline(g), popups(g)), out
             )
             val pub = ClipEditor.publish(ctx, out, title)
             if (pub != null) {

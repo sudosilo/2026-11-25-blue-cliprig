@@ -12,20 +12,28 @@ data class GameProfile(
     var url: String = "",
     var captions: MutableList<String> = mutableListOf(),
     var endText: String = "",
-    var hook: Boolean = false
+    var hook: Boolean = false,
+    var promoUrl: String = "",
+    var tagline: String = "",
+    var popups: MutableList<String> = mutableListOf()
 ) {
     fun toJson(): JSONObject = JSONObject()
         .put("id", id).put("name", name).put("url", url)
         .put("captions", JSONArray(captions)).put("endText", endText).put("hook", hook)
+        .put("promoUrl", promoUrl).put("tagline", tagline).put("popups", JSONArray(popups))
 
     companion object {
         fun fromJson(o: JSONObject): GameProfile {
             val caps = mutableListOf<String>()
             val a = o.optJSONArray("captions") ?: JSONArray()
             for (i in 0 until a.length()) caps.add(a.optString(i))
+            val pops = mutableListOf<String>()
+            val pa = o.optJSONArray("popups") ?: JSONArray()
+            for (i in 0 until pa.length()) pops.add(pa.optString(i))
             return GameProfile(
                 o.optString("id"), o.optString("name"), o.optString("url"),
-                caps, o.optString("endText"), o.optBoolean("hook")
+                caps, o.optString("endText"), o.optBoolean("hook"),
+                o.optString("promoUrl"), o.optString("tagline"), pops
             )
         }
     }
@@ -142,6 +150,15 @@ object Store {
     var musicOn: Boolean
         get() = prefs.getBoolean("musicOn", true)
         set(v) = prefs.edit().putBoolean("musicOn", v).apply()
+    var defaultPromo: String
+        get() = prefs.getString("defaultPromo", "") ?: ""
+        set(v) = prefs.edit().putString("defaultPromo", v).apply()
+    var defaultTagline: String
+        get() = prefs.getString("defaultTagline", "") ?: ""
+        set(v) = prefs.edit().putString("defaultTagline", v).apply()
+    var defaultPopups: List<String>
+        get() = (prefs.getString("defaultPopups", "") ?: "").lines().map { it.trim() }.filter { it.isNotEmpty() }
+        set(v) = prefs.edit().putString("defaultPopups", v.joinToString("\n")).apply()
     var musicMode: String
         get() = prefs.getString("musicMode", if (prefs.getBoolean("musicOn", true)) "Random" else "Off") ?: "Random"
         set(v) = prefs.edit().putString("musicMode", v).apply()

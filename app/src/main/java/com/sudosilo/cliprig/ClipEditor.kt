@@ -20,6 +20,9 @@ import androidx.media3.common.audio.ChannelMixingAudioProcessor
 import androidx.media3.common.audio.ChannelMixingMatrix
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.effect.BitmapOverlay
+import androidx.media3.effect.FrameDropEffect
+import androidx.media3.effect.MatrixTransformation
+import android.graphics.Matrix
 import androidx.media3.effect.OverlayEffect
 import androidx.media3.common.OverlaySettings
 import androidx.media3.effect.Presentation
@@ -41,12 +44,15 @@ import kotlin.coroutines.resumeWithException
 
 data class EditSpec(
     val source: Uri,
-    val startMs: Long,
-    val endMs: Long,
+    val segments: List<LongRange>,
+    val rapid: Boolean,
     val caption: String,
+    val hypes: List<String>,
     val title: String,
     val endText: String,
-    val music: Uri?
+    val music: Uri?,
+    val themeId: String,
+    val intro: Boolean
 )
 
 @UnstableApi
@@ -85,38 +91,71 @@ object ClipEditor {
         return p
     }
 
-    suspend fun render(ctx: Context, spec: EditSpec, out: File) {
-        val clipItem = MediaItem.Builder()
-            .setUri(spec.source)
-            .setClippingConfiguration(
-                MediaItem.ClippingConfiguration.Builder()
-                    .setStartPositionMs(spec.startMs)
-                    .setEndPositionMs(spec.endMs)
-                    .build()
-            ).build()
+    private fun clipItem(src: Uri, from: Long, to: Long): MediaItem = MediaItem.Builder()
+        .setUri(src)
+        .setClippingConfiguration(
+            MediaItem.ClippingConfiguration.Builder().setStartPositionMs(from).setEndPositionMs(to).build()
+        ).build()
 
+    fun plan(spec: EditSpec, theme: Theme, sourceDurMs: Long): List<Pair<LongRange, Int>> {
+        val intro = if (spec.intro) theme.introMs else 0L
+        val out = mutableListOf<Pair<LongRange, Int>>()
+        if (!spec.rapid) {
+            val seg = spec.segments.first()
+            var s = seg.first - intro
+            var e = seg.last
+            if (s < 0) { e = minOf(sourceDurMs, e - s); s = 0 }
+            out.add(s..e to 0)
+        } else {
+            if (intro > 0) {
+                val first = spec.segments.first()
+                val s = maxOf(0L, first.first - intro)
+                val e = if (first.first - s >= intro) first.first else minOf(sourceDurMs, s + intro)
+                out.add(s..e to -1)
+            }
+            spec.segments.forEachIndexed { i, r -> out.add(r to i) }
+        }
+        return out
+    }
+
+    suspend fun render(ctx: Context, spec: EditSpec, out: File) {
+        val theme = ThemeBook.byId(spec.themeId)
+        val dur = Analyzer.durationMs(ctx, spec.source).takeIf { it > 0 } ?: Long.MAX_VALUE
+        val parts = plan(spec, theme, dur)
+        val total = parts.sumOf { it.first.last - it.first.first }
+        val intro = if (spec.intro) theme.introMs else 0L
         val layout = if (Store.framing == "Fit") Presentation.LAYOUT_SCALE_TO_FIT
         else Presentation.LAYOUT_SCALE_TO_FIT_WITH_CROP
-        val overlay = CardOverlay(
-            spec.caption, spec.title, spec.endText, spec.endMs - spec.startMs,
-            Store.captionStyle, Store.titleCards
-        )
-        val videoEffects = ImmutableList.of<androidx.media3.common.Effect>(
-            Presentation.createForWidthAndHeight(OUT_W, OUT_H, layout),
-            OverlayEffect(ImmutableList.of<androidx.media3.effect.TextureOverlay>(overlay))
-        )
         val gameVol = if (spec.music != null) Store.gameVolume / 100f else 1f
-        val game = EditedMediaItem.Builder(clipItem)
-            .setEffects(Effects(ImmutableList.of(volume(gameVol)), videoEffects))
-            .build()
 
-        val sequences = mutableListOf(EditedMediaItemSequence(ImmutableList.of(game)))
+        var offset = 0L
+        val items = parts.map { (range, cut) ->
+            val len = range.last - range.first
+            val info = ItemInfo(
+                theme, offset, cut, spec.caption,
+                if (cut >= 0 && spec.rapid) spec.hypes.getOrElse(cut) { "" } else "",
+                total, intro, spec.rapid, spec.title, spec.endText, Store.titleCards, Store.captionStyle
+            )
+            offset += len
+            val clock = ItemClock()
+            val effects = ImmutableList.of<androidx.media3.common.Effect>(
+                FrameDropEffect.createDefaultFrameDropEffect(30f),
+                Presentation.createForWidthAndHeight(OUT_W, OUT_H, layout),
+                ThemeMatrix(info, clock),
+                OverlayEffect(ImmutableList.of<androidx.media3.effect.TextureOverlay>(ThemeOverlay(info, clock)))
+            )
+            EditedMediaItem.Builder(clipItem(spec.source, range.first, range.last))
+                .setEffects(Effects(ImmutableList.of(volume(gameVol)), effects))
+                .build()
+        }
+
+        val sequences = mutableListOf(EditedMediaItemSequence.Builder(items).build())
         if (spec.music != null) {
             val m = EditedMediaItem.Builder(MediaItem.fromUri(spec.music))
                 .setRemoveVideo(true)
                 .setEffects(Effects(ImmutableList.of(volume(Store.musicVolume / 100f)), ImmutableList.of()))
                 .build()
-            sequences.add(EditedMediaItemSequence(ImmutableList.of(m), true))
+            sequences.add(EditedMediaItemSequence.Builder(m).setIsLooping(true).build())
         }
         val composition = Composition.Builder(sequences).build()
 
@@ -162,76 +201,59 @@ object ClipEditor {
     }
 }
 
+class ItemClock {
+    private var base = -1L
+    @Synchronized fun rel(us: Long): Long { if (base < 0 || us < base) base = us; return (us - base) / 1000 }
+}
+
+data class ItemInfo(
+    val theme: Theme,
+    val offsetMs: Long,
+    val cut: Int,
+    val caption: String,
+    val hype: String,
+    val totalMs: Long,
+    val introMs: Long,
+    val rapid: Boolean,
+    val title: String,
+    val endText: String,
+    val cards: Boolean,
+    val captionStyle: String
+) {
+    fun frame(relMs: Long) = Frame(
+        offsetMs + relMs, totalMs, introMs, cut, relMs, rapid, caption, hype, title, endText, cards, captionStyle
+    )
+}
+
 @UnstableApi
-class CardOverlay(
-    private val caption: String,
-    private val title: String,
-    private val endText: String,
-    private val clipMs: Long,
-    private val style: String,
-    private val cards: Boolean
-) : BitmapOverlay() {
-
-    private var baseUs = -1L
-    private val empty = Bitmap.createBitmap(2, 2, Bitmap.Config.ARGB_8888)
-    private val captionBmp by lazy { box(caption, 64f, 0xF01E6BFF.toInt(), 940) }
-    private val titleBmp by lazy { box(title, 92f, 0xF01E6BFF.toInt(), 960) }
-    private val endBmp by lazy { box(endText, 62f, 0xF00F1A33.toInt(), 960) }
-
-    private fun phase(us: Long): Int {
-        if (baseUs < 0) baseUs = us
-        val rel = (us - baseUs) / 1000
-        return when {
-            cards && title.isNotBlank() && rel < 1600 -> 1
-            cards && endText.isNotBlank() && rel > clipMs - 2200 -> 2
-            style != "Off" && caption.isNotBlank() -> 0
-            else -> 3
-        }
+class ThemeMatrix(private val info: ItemInfo, private val clock: ItemClock) : MatrixTransformation {
+    override fun getMatrix(presentationTimeUs: Long): Matrix {
+        val r = info.theme.videoRect(info.frame(clock.rel(presentationTimeUs)))
+        val m = Matrix()
+        val sx = maxOf(0.002f, r.width() / W)
+        val sy = maxOf(0.002f, r.height() / H)
+        m.setScale(sx, sy)
+        val cx = if (r.width() < 1) W / 2 else r.centerX()
+        val cy = if (r.height() < 1) H / 2 else r.centerY()
+        m.postTranslate(cx / W * 2 - 1, 1 - cy / H * 2)
+        return m
     }
+}
 
-    override fun getBitmap(presentationTimeUs: Long): Bitmap = when (phase(presentationTimeUs)) {
-        0 -> captionBmp
-        1 -> titleBmp
-        2 -> endBmp
-        else -> empty
-    }
+@UnstableApi
+class ThemeOverlay(private val info: ItemInfo, private val clock: ItemClock) : BitmapOverlay() {
+    private val bmp = Bitmap.createBitmap(W.toInt(), H.toInt(), Bitmap.Config.ARGB_8888)
+    private val canvas = Canvas(bmp)
+    private var lastKey = ""
 
-    override fun getOverlaySettings(presentationTimeUs: Long): OverlaySettings {
-        val y = when (phase(presentationTimeUs)) {
-            0 -> if (style == "Bottom") -0.62f else 0.62f
-            else -> 0f
+    override fun getBitmap(presentationTimeUs: Long): Bitmap {
+        val f = info.frame(clock.rel(presentationTimeUs))
+        val key = info.theme.key(f)
+        if (key != lastKey) {
+            lastKey = key
+            bmp.eraseColor(0)
+            info.theme.draw(canvas, f)
         }
-        return StaticOverlaySettings.Builder()
-            .setBackgroundFrameAnchor(0f, y)
-            .setOverlayFrameAnchor(0f, 0f)
-            .build()
-    }
-
-    private fun box(text: String, size: Float, bg: Int, maxW: Int): Bitmap {
-        if (text.isBlank()) return empty
-        val tp = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = 0xFFFFFFFF.toInt()
-            textSize = size
-            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-        }
-        val pad = (size * 0.45f).toInt()
-        val inner = maxW - pad * 2
-        val sl = StaticLayout.Builder.obtain(text, 0, text.length, tp, inner)
-            .setAlignment(Layout.Alignment.ALIGN_CENTER)
-            .setLineSpacing(0f, 1.05f)
-            .build()
-        var widest = 0f
-        for (i in 0 until sl.lineCount) widest = maxOf(widest, sl.getLineWidth(i))
-        val w = (widest.toInt() + pad * 2).coerceAtMost(maxW)
-        val h = sl.height + pad * 2
-        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-        val c = Canvas(bmp)
-        val p = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = bg }
-        c.drawRoundRect(RectF(0f, 0f, w.toFloat(), h.toFloat()), size * 0.4f, size * 0.4f, p)
-        c.save()
-        c.translate((w - inner) / 2f, pad.toFloat())
-        sl.draw(c)
-        c.restore()
         return bmp
     }
 }

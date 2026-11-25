@@ -65,6 +65,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var addressField: android.widget.EditText
     private var launchGames = listOf<GameProfile>()
     private var launchLen = 15
+    private lateinit var launchStyle: Spinner
+    private lateinit var preview: ThemePreviewView
+    private lateinit var themeList: LinearLayout
 
     private lateinit var inboxList: RecyclerView
     private lateinit var inboxGate: View
@@ -179,6 +182,7 @@ class MainActivity : AppCompatActivity() {
         screens["inbox"] = buildInbox()
         screens["library"] = buildLibrary()
         screens["games"] = buildGames()
+        screens["themes"] = buildThemes()
         screens.values.forEach { screenHost.addView(it, FrameLayout.LayoutParams(-1, -1)); it.visibility = View.GONE }
 
         val stack = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -233,13 +237,14 @@ class MainActivity : AppCompatActivity() {
         current = name
         screens.forEach { (k, v) -> v.visibility = if (k == name) View.VISIBLE else View.GONE }
         titleText.text = when (name) {
-            "inbox" -> "Inbox"; "library" -> "Library"; "games" -> "Games"; else -> "Launch"
+            "inbox" -> "Inbox"; "library" -> "Library"; "games" -> "Games"; "themes" -> "Themes"; else -> "Launch"
         }
         when (name) {
             "inbox" -> refreshInbox()
             "library" -> refreshLibrary()
             "games" -> refreshGames()
             "launch" -> refreshLaunchGames()
+            "themes" -> refreshThemes()
         }
         drawer.closeDrawer(GravityCompat.START)
     }
@@ -264,6 +269,7 @@ class MainActivity : AppCompatActivity() {
         col.addView(nav("Inbox", "inbox"))
         col.addView(nav("Library", "library"))
         col.addView(nav("Games", "games"))
+        col.addView(nav("Themes", "themes"))
 
         updateItem = label("Check for update (${BuildConfig.VERSION_NAME})", 16f, BLUE, true).apply {
             setPadding(dp(20), dp(16), dp(20), dp(16))
@@ -298,6 +304,10 @@ class MainActivity : AppCompatActivity() {
             Store.clipLenSec = lenOptions[it]
         }
         val counts = (1..6).toList()
+        val styles0 = listOf("Highlights", "Rapid fire", "Both")
+        row("Clip style", listOf("Highlight clips", "Rapid fire montage", "Both"), styles0.indexOf(Store.clipStyle).coerceAtLeast(0)) {
+            Store.clipStyle = styles0[it]; if (::launchStyle.isInitialized) launchStyle.setSelection(it, false)
+        }
         row("Clips per session", counts.map { "$it" }, Store.clipCount - 1) { Store.clipCount = counts[it] }
         row("Music", listOf("On", "Off"), if (Store.musicOn) 0 else 1) { Store.musicOn = it == 0 }
         s.add(label("Music folder", 13f, MUTED, true), 10)
@@ -339,6 +349,12 @@ class MainActivity : AppCompatActivity() {
         c.add(label("Clip length", 13f, MUTED, true), 16)
         launchLen = Store.clipLenSec
         c.add(picker(lenOptions.map { "$it seconds" }, lenOptions.indexOf(launchLen).coerceAtLeast(0)) { launchLen = lenOptions[it] }, 6)
+        c.add(label("Clip style", 13f, MUTED, true), 16)
+        val styles = listOf("Highlights", "Rapid fire", "Both")
+        launchStyle = picker(listOf("Highlight clips", "Rapid fire montage", "Both"), styles.indexOf(Store.clipStyle).coerceAtLeast(0)) {
+            Store.clipStyle = styles[it]
+        }
+        c.add(launchStyle, 6)
         c.add(blueButton("Start playing") { startRun() }, 24, dp(60))
         val tip = label(
             "While you play, press volume down or tap the blue star to mark a moment you want in a clip. " +
@@ -643,6 +659,7 @@ class MainActivity : AppCompatActivity() {
         fun put(row: LinearLayout, v: View) = row.addView(v, LinearLayout.LayoutParams(0, dp(52), 1f).apply { setMargins(dp(4), dp(4), dp(4), dp(4)) })
         put(r1, blueButton("Share") { share(Uri.parse(clip.uri)) })
         put(r1, blueButton("New caption") { Pipeline.regenerate(this, clip); closeOverlay() })
+        put(r1, blueButton("Restyle") { Pipeline.restyle(this, clip); closeOverlay() })
         put(r2, blueButton("Delete", false) {
             AlertDialog.Builder(this).setMessage("Delete this clip?")
                 .setPositiveButton("Delete") { _, _ ->
@@ -661,6 +678,58 @@ class MainActivity : AppCompatActivity() {
             .putExtra(Intent.EXTRA_STREAM, uri)
             .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         startActivity(Intent.createChooser(i, "Share clip"))
+    }
+
+    // Themes
+
+    private fun buildThemes(): View {
+        val c = column(12)
+        preview = ThemePreviewView(this).apply { background = rounded(0xFF0A1020.toInt(), dp(16).toFloat()) }
+        c.add(preview, 0, dp(330))
+        val opts = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val introPick = picker(listOf("Intro on", "Intro off"), if (Store.introOn) 0 else 1) {
+            Store.introOn = it == 0; preview.intro = Store.introOn; preview.theme = preview.theme
+        }
+        val modePick = picker(listOf("Preview rapid fire", "Preview highlight"), 0) {
+            preview.rapid = it == 0; preview.theme = preview.theme
+        }
+        opts.addView(introPick, LinearLayout.LayoutParams(0, dp(48), 1f).apply { rightMargin = dp(6) })
+        opts.addView(modePick, LinearLayout.LayoutParams(0, dp(48), 1f).apply { leftMargin = dp(6) })
+        c.add(opts, 10)
+        val scroll = ScrollView(this)
+        themeList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 0, 0, dp(130)) }
+        scroll.addView(themeList)
+        scroll.clipToPadding = false
+        c.add(scroll, 10, 0)
+        (scroll.layoutParams as LinearLayout.LayoutParams).weight = 1f
+        return c
+    }
+
+    private fun refreshThemes() {
+        preview.intro = Store.introOn
+        val g = Store.game(Store.lastGameId)
+        preview.title = g?.name?.ifBlank { null } ?: "Your Game"
+        preview.endText = "play it at\n" + (g?.url?.removePrefix("https://")?.removePrefix("http://")?.trimEnd('/')?.ifBlank { null } ?: "yourgame.site")
+        preview.caption = (g?.captions?.firstOrNull() ?: Store.defaultCaptions.firstOrNull() ?: "this run was unreal")
+        preview.theme = if (Store.theme == "random") ComicTheme else ThemeBook.byId(Store.theme)
+        themeList.removeAllViews()
+        val entries = ThemeBook.all.map { Triple(it.id, it.label, it.blurb) } +
+            Triple("random", "Surprise Me", "A different theme on every clip")
+        for ((id, name, blurb) in entries) {
+            val selected = Store.theme == id
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                background = rounded(if (selected) BLUE_SOFT else Color.WHITE, dp(14).toFloat(), dp(2), if (selected) BLUE else 0xFFDCE4F2.toInt())
+                setPadding(dp(14), dp(12), dp(14), dp(12))
+                setOnClickListener {
+                    Store.theme = id
+                    refreshThemes()
+                }
+            }
+            row.addView(label((if (selected) "\u25C9  " else "\u25CB  ") + name, 17f, if (selected) BLUE_DARK else INK, true))
+            row.addView(label(blurb, 13f, MUTED))
+            themeList.addView(row, LinearLayout.LayoutParams(-1, dp(78)).apply { bottomMargin = dp(8) })
+        }
     }
 
     // Games

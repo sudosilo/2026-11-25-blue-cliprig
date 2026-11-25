@@ -85,24 +85,36 @@ object Pipeline {
         Store.markInboxDone(uri.toString())
     }
 
-    fun regenerate(ctx: Context, clip: ClipRecord) = enqueue(ctx) {
-        post(Status(true, "Making a new caption version", 0.2f))
+    fun regenerate(ctx: Context, clip: ClipRecord) = rerender(ctx, clip, clip.theme, true)
+
+    fun restyle(ctx: Context, clip: ClipRecord) = rerender(ctx, clip, ThemeBook.pick(Store.theme).id, false)
+
+    private fun rerender(ctx: Context, clip: ClipRecord, themeId: String, newCaption: Boolean) = enqueue(ctx) {
+        post(Status(true, if (newCaption) "Making a new caption version" else "Restyling with ${ThemeBook.byId(themeId).label}", 0.2f))
         val src = Uri.parse(clip.source)
         if (src.scheme == "file" && !File(src.path ?: "").exists()) {
             post(Status(true, "The raw recording for that clip was cleaned up", 1f))
             return@enqueue
         }
         val g = Store.game(clip.gameId)
-        val caption = pickCaption(clip.gameId, clip.caption)
+        val caption = if (newCaption) pickCaption(clip.gameId, clip.caption) else clip.caption
+        val ranges = clip.ranges()
+        val theme = ThemeBook.byId(themeId)
         val out = File(Store.workDir, "2026-11-25-blue-cliprig-v1-work-${clip.id}.mp4")
         ClipEditor.render(
-            ctx, EditSpec(src, clip.startMs, clip.endMs, caption, g?.name ?: clip.gameName,
-                endText(g?.url ?: "", g?.endText ?: ""), pickMusic(ctx)), out
+            ctx, EditSpec(src, ranges, clip.rapid, caption, hypes(theme, ranges.size), g?.name ?: clip.gameName,
+                endText(g?.url ?: "", g?.endText ?: ""), pickMusic(ctx), themeId, Store.introOn), out
         )
         val newUri = ClipEditor.publish(ctx, out, clip.gameName) ?: return@enqueue
         runCatching { ctx.contentResolver.delete(Uri.parse(clip.uri), null, null) }
-        Store.replaceClip(clip.copy(uri = newUri.toString(), caption = caption))
+        Store.replaceClip(clip.copy(uri = newUri.toString(), caption = caption, theme = themeId))
         withContext(Dispatchers.Main) { onClipAdded?.invoke() }
+        post(Status(true, "Done", 1f))
+    }
+
+    private fun hypes(theme: Theme, n: Int): List<String> {
+        val bank = theme.hype.shuffled()
+        return (0 until n).map { bank[it % bank.size] }
     }
 
     private fun endText(url: String, custom: String): String {
@@ -125,27 +137,41 @@ object Pipeline {
         val visual = Analyzer.visualChange(ctx, uri, bins) { p ->
             post(Status(true, "Watching for big moments", 0.15f + p * 0.35f))
         }
-        val windows = Analyzer.pick(dur, audio, visual, session, clipLenSec, Store.clipCount)
         val g = Store.game(gameId)
-        val title = g?.name ?: gameName
-        windows.forEachIndexed { i, w ->
-            post(Status(true, "Cutting clip ${i + 1} of ${windows.size}", 0.5f + 0.5f * i / windows.size))
+        val title = (g?.name ?: gameName).ifBlank { "Game" }
+        val style = Store.clipStyle
+        val jobs = mutableListOf<Pair<List<LongRange>, Boolean>>()
+        if (style != "Rapid fire") {
+            Analyzer.pick(dur, audio, visual, session, clipLenSec, Store.clipCount)
+                .forEach { jobs.add(listOf(it.startMs..it.endMs) to false) }
+        }
+        if (style != "Highlights") {
+            val cuts = Analyzer.pick(dur, audio, visual, session, 3, 5).map { it.startMs..it.endMs }
+            if (cuts.isNotEmpty()) jobs.add(cuts to true)
+        }
+        var made = 0
+        jobs.forEachIndexed { i, (ranges, rapid) ->
+            post(Status(true, if (rapid) "Cutting the rapid fire montage" else "Cutting clip ${i + 1} of ${jobs.size}", 0.5f + 0.5f * i / jobs.size))
+            val theme = ThemeBook.pick(Store.theme)
             val caption = pickCaption(gameId)
             val out = File(Store.workDir, "2026-11-25-blue-cliprig-v1-work-$i.mp4")
             ClipEditor.render(
-                ctx, EditSpec(uri, w.startMs, w.endMs, caption, title, endText(url, g?.endText ?: ""), pickMusic(ctx)), out
+                ctx, EditSpec(uri, ranges, rapid, caption, hypes(theme, ranges.size), title,
+                    endText(url, g?.endText ?: ""), pickMusic(ctx), theme.id, Store.introOn), out
             )
-            val pub = ClipEditor.publish(ctx, out, title.ifBlank { "game" })
+            val pub = ClipEditor.publish(ctx, out, title)
             if (pub != null) {
+                made++
                 Store.addClip(
                     ClipRecord(
-                        UUID.randomUUID().toString().take(12), pub.toString(), title.ifBlank { "Unsorted" },
-                        caption, uri.toString(), w.startMs, w.endMs, gameId, System.currentTimeMillis()
+                        UUID.randomUUID().toString().take(12), pub.toString(), title,
+                        caption, uri.toString(), ranges.first().first, ranges.last().last, gameId,
+                        System.currentTimeMillis(), ClipRecord.encode(ranges), rapid, theme.id
                     )
                 )
                 withContext(Dispatchers.Main) { onClipAdded?.invoke() }
             }
         }
-        post(Status(true, "Done, ${windows.size} clips in the Library", 1f))
+        post(Status(true, "Done, $made clips in the Library", 1f))
     }
 }

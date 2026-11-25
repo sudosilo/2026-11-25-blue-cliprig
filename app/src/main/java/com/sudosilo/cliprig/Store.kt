@@ -40,18 +40,31 @@ data class ClipRecord(
     val startMs: Long,
     val endMs: Long,
     val gameId: String,
-    val createdAt: Long
+    val createdAt: Long,
+    val segments: String = "",
+    val rapid: Boolean = false,
+    val theme: String = "plain"
 ) {
+    fun ranges(): List<LongRange> {
+        val parsed = segments.split(";").mapNotNull {
+            val a = it.split("-"); if (a.size == 2) (a[0].toLongOrNull() ?: return@mapNotNull null)..(a[1].toLongOrNull() ?: return@mapNotNull null) else null
+        }
+        return parsed.ifEmpty { listOf(startMs..endMs) }
+    }
+
     fun toJson(): JSONObject = JSONObject()
         .put("id", id).put("uri", uri).put("gameName", gameName).put("caption", caption)
         .put("source", source).put("startMs", startMs).put("endMs", endMs)
         .put("gameId", gameId).put("createdAt", createdAt)
+        .put("segments", segments).put("rapid", rapid).put("theme", theme)
 
     companion object {
+        fun encode(r: List<LongRange>) = r.joinToString(";") { "${it.first}-${it.last}" }
         fun fromJson(o: JSONObject) = ClipRecord(
             o.optString("id"), o.optString("uri"), o.optString("gameName"),
             o.optString("caption"), o.optString("source"), o.optLong("startMs"),
-            o.optLong("endMs"), o.optString("gameId"), o.optLong("createdAt")
+            o.optLong("endMs"), o.optString("gameId"), o.optLong("createdAt"),
+            o.optString("segments"), o.optBoolean("rapid"), o.optString("theme", "plain")
         )
     }
 }
@@ -139,6 +152,15 @@ object Store {
     var rawKeepDays: Int
         get() = prefs.getInt("rawKeepDays", 7)
         set(v) = prefs.edit().putInt("rawKeepDays", v).apply()
+    var theme: String
+        get() = prefs.getString("theme", "comic") ?: "comic"
+        set(v) = prefs.edit().putString("theme", v).apply()
+    var introOn: Boolean
+        get() = prefs.getBoolean("introOn", true)
+        set(v) = prefs.edit().putBoolean("introOn", v).apply()
+    var clipStyle: String
+        get() = prefs.getString("clipStyle", "Both") ?: "Both"
+        set(v) = prefs.edit().putString("clipStyle", v).apply()
     var lastGameId: String
         get() = prefs.getString("lastGameId", "") ?: ""
         set(v) = prefs.edit().putString("lastGameId", v).apply()

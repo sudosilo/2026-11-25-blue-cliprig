@@ -88,6 +88,8 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var gamesList: RecyclerView
     private lateinit var updateItem: TextView
+    private lateinit var updatePill: TextView
+    private var lastCheck = 0L
     private var pendingRelease: Updater.Release? = null
 
     private val thumbs = LruCache<String, Bitmap>(80)
@@ -131,7 +133,6 @@ class MainActivity : AppCompatActivity() {
         Pipeline.onClipAdded = { refreshLibrary() }
         showStatus(Pipeline.status)
         handleIntent(intent)
-        checkUpdate(false)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -141,6 +142,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        if (System.currentTimeMillis() - lastCheck > 60_000) { lastCheck = System.currentTimeMillis(); checkUpdate(false) }
         refreshLaunchGames()
         if (current == "inbox") refreshInbox()
         if (current == "library") refreshLibrary()
@@ -188,8 +190,17 @@ class MainActivity : AppCompatActivity() {
         bar.addView(burger, LinearLayout.LayoutParams(dp(56), dp(56)))
         titleText = label("Launch", 20f, INK, true)
         bar.addView(titleText, LinearLayout.LayoutParams(0, -2, 1f))
-        val dot = View(this).apply { background = rounded(BLUE, dp(6).toFloat()) }
-        bar.addView(dot, LinearLayout.LayoutParams(dp(12), dp(12)).apply { rightMargin = dp(18) })
+        updatePill = TextView(this).apply {
+            text = "Update app"
+            textSize = 14f
+            gravity = Gravity.CENTER
+            setTextColor(Color.WHITE)
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            background = rounded(BLUE, dp(18).toFloat())
+            visibility = View.INVISIBLE
+            setOnClickListener { installUpdate() }
+        }
+        bar.addView(updatePill, LinearLayout.LayoutParams(dp(120), dp(38)).apply { rightMargin = dp(12) })
 
         val screenHost = FrameLayout(this)
         screens["launch"] = buildLaunch()
@@ -289,7 +300,7 @@ class MainActivity : AppCompatActivity() {
         col.addView(nav("Themes", "themes"))
         col.addView(nav("Music", "music"))
 
-        updateItem = label("Check for update (${BuildConfig.VERSION_NAME})", 16f, BLUE, true).apply {
+        updateItem = label("Update app (you have ${BuildConfig.VERSION_NAME})", 16f, BLUE, true).apply {
             setPadding(dp(20), dp(16), dp(20), dp(16))
             setOnClickListener { checkUpdate(true) }
         }
@@ -1053,14 +1064,16 @@ class MainActivity : AppCompatActivity() {
             val r = Updater.latest()
             if (r == null) { if (userAsked) toast("Could not reach GitHub for updates"); return@launch }
             if (r.version <= BuildConfig.VERSION_CODE) {
-                updateItem.text = "Up to date (${BuildConfig.VERSION_NAME})"
+                updatePill.visibility = View.INVISIBLE
+                updateItem.text = "Update app (up to date, ${BuildConfig.VERSION_NAME})"
                 if (userAsked) toast("cliprig is up to date")
                 return@launch
             }
             pendingRelease = r
-            updateItem.text = "Install update v${r.version}"
+            updateItem.text = "Update app to v${r.version}"
             updateItem.setOnClickListener { installUpdate() }
-            if (userAsked) installUpdate() else toast("A cliprig update is ready in the menu")
+            updatePill.visibility = View.VISIBLE
+            if (userAsked) installUpdate()
         }
     }
 
